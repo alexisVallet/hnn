@@ -1,0 +1,28 @@
+name:                hnn
+version:             0.1.0.0
+synopsis:            GPU neural network library.
+description:         Please see README.md
+homepage:            https://github.com/alexisVallet/hnn
+license:             BSD3
+license-file:        LICENSE
+author:              Alexis Vallet
+maintainer:          alexis.vallet@gmail.com
+-- copyright:           
+category:            Machine learning
+build-type:          Simple
+-- extra-source-files:  
+cabal-version:       >=1.10
+
+library
+  hs-source-dirs:      src
+  exposed-modules:     HNN
+                     , HNN.Tensor
+  build-depends:       base >= 4.7 && < 5
+                     , cuda >= 0.6.5 && < 0.7
+                     , hcudnn >= 0.1 && < 0.2
+                     , mtl >= 2.1 && < 2.3
+  default-language:    Haskell2010
+
+source-repository head
+  type:     git
+  location: https://github.com/alexisVallet/hnn

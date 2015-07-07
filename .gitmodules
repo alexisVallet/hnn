@@ -1,0 +1,3 @@
+[submodule "hcudnn"]
+	path = hcudnn
+	url = git@github.com:alexisVallet/hcudnn.git

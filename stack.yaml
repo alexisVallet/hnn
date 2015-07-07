@@ -1,0 +1,7 @@
+flags: {}
+packages:
+- '.'
+- 'hcudnn'
+extra-deps:
+- cuda-0.6.6.2
+resolver: lts-2.17
