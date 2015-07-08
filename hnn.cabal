@@ -17,6 +17,7 @@ library
   hs-source-dirs:      src
   exposed-modules:     HNN
                      , HNN.Tensor
+                     , HNN.NN
   build-depends:       base >= 4.7 && < 5
                      , cuda >= 0.6.5 && < 0.7
                      , hcudnn >= 0.1 && < 0.2

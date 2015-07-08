@@ -1,12 +1,16 @@
-{-# LANGUAGE GADTs, ForeignFunctionInterface #-}
+{-# LANGUAGE GADTs, ForeignFunctionInterface, ScopedTypeVariables #-}
 module HNN.Tensor (
-  Tensor
-  , TensorDataType
+  MTensor
+  , IOTensor
+  , TensorDataType(..)
   , nbdims
   , dtype
   , shape
-  , stride
-  , make4dTensor
+  , emptyTensor
+  , makeTensor
+  , withDevicePtr
+  , fromList
+  , toList
   ) where
 import Foreign
 import Foreign.C
@@ -19,79 +23,69 @@ import qualified Foreign.CUDA.CuDNN as CuDNN
 import Data.Proxy
 import System.IO.Error
 import Control.Monad
+import Control.Monad.ST
 
-class TensorDataType a where
-  toCudnnType :: Proxy a -> CuDNN.DataType
+class (Num a) => TensorDataType a where
+  datatype :: Proxy a -> CuDNN.DataType
 
-instance TensorDataType CFloat where
-  toCudnnType = const CuDNN.float
+instance TensorDataType Float where
+  datatype = const CuDNN.float
 
-instance TensorDataType CDouble where
-  toCudnnType = const CuDNN.double
+instance TensorDataType Double where
+  datatype = const CuDNN.double
 
-data Tensor a where
-  Tensor :: (TensorDataType a)
-         => CuDNN.TensorDescriptor
-         -> Int -- nbdims
-         -> ForeignPtr a -- data
-         -> Tensor a
+-- mutable tensor
+data MTensor s a where
+  MTensor :: (TensorDataType a, Storable a)
+          => [Int] -- shape
+          -> ForeignPtr a -- data
+          -> MTensor s a
 
--- Basic accessors for shape, stride, datatype.
-desc :: Tensor a -> CuDNN.TensorDescriptor
-desc (Tensor desc _ _) = desc
+type IOTensor = MTensor RealWorld
 
-nbdims :: Tensor a -> Int
-nbdims (Tensor _ nbdims _) = nbdims
+shape :: MTensor s a -> [Int]
+shape (MTensor shp _) = shp
 
-descriptor :: Tensor a -> (CuDNN.DataType, Int, [Int], [Int])
-descriptor t = unsafePerformIO $ do
-  alloca $ \dtypeptr ->
-    alloca $ \nbdimsptr ->
-      alloca $ \dimsptr ->
-        alloca $ \stridesptr -> do
-          CuDNN.getTensorNdDescriptor
-            (desc t) (fromIntegral $ nbdims t) dtypeptr nbdimsptr dimsptr stridesptr
-          dtype <- peek dtypeptr
-          dims <- peekArray (fromIntegral $ nbdims t) dimsptr
-          strides <- peekArray (fromIntegral $ nbdims t) stridesptr
-          return (dtype, (nbdims t), fmap fromIntegral dims, fmap fromIntegral strides)
+nbdims :: MTensor s a -> Int
+nbdims (MTensor shp _) = length shp
 
-dtype :: Tensor a -> CuDNN.DataType
-dtype t = dtp where (dtp, _, _, _) = descriptor t
+dtype :: forall s a . (TensorDataType a) => MTensor s a -> CuDNN.DataType
+dtype _ = datatype (Proxy :: Proxy a)
 
-shape :: Tensor a -> [Int]
-shape t = shp where (_, _, shp, _) = descriptor t
-
-stride :: Tensor a -> [Int]
-stride t = str where (_, _, _, str) = descriptor t
-
-
--- Creating tensors from raw memory.
--- 4d tensors.
-make4dTensor :: (Storable a, TensorDataType a)
-             => Proxy a
-             -> (Int, Int, Int, Int)
-             -> Ptr a
-             -> IO (Tensor a)
-make4dTensor proxy (n,c,h,w) dataptr = do
-  -- create the tensor descriptor.
-  desc <- alloca $ \descptr -> do
-    status <- CuDNN.createTensorDescriptor descptr
-    if status == CuDNN.success
-      then peek descptr
-      else do
-        errMsg <- CuDNN.getErrorString status >>= peekCString
-        ioError $ userError $ "Couldn't create tensor descriptor: " ++ errMsg
-  -- set it
-  let [cn,cc,ch,cw] = map fromIntegral [n,c,h,w]
-  status <- CuDNN.setTensor4dDescriptor desc CuDNN.nchw (toCudnnType proxy) cn cc ch cw
-  when (status /= CuDNN.success) $ do
-    errMsg <- CuDNN.getErrorString status >>= peekCString
-    ioError $ userError $ "Couldn't set tensor descriptor: " ++ errMsg
-  -- allocate and fill the data in device memory
-  let size = n*c*h*w
+emptyTensor :: (TensorDataType a, Storable a) => [Int] -> IO (IOTensor a)
+emptyTensor shape = do
+  let size = product shape
   dvcptr <- CUDA.mallocArray size
-  CUDA.pokeArray size dataptr dvcptr
   let finalizer = CUDA.free dvcptr
-  datafptr <- Foreign.Concurrent.newForeignPtr (CUDA.useDevicePtr dvcptr) finalizer
-  return $ Tensor desc 4 datafptr
+  datafptr <- Foreign.Concurrent.newForeignPtr
+              (CUDA.useDevicePtr dvcptr)
+              finalizer
+  return $ MTensor shape datafptr
+
+withDevicePtr :: (Storable a) => IOTensor a -> (CUDA.DevicePtr a -> IO b) -> IO b
+withDevicePtr (MTensor _ datafptr) action = do
+  withForeignPtr datafptr $ \dataptr -> action (CUDA.DevicePtr dataptr)
+
+makeTensor :: (TensorDataType a, Storable a)
+           => [Int]
+           -> Ptr a
+           -> IO (IOTensor a)
+makeTensor shape dataptr = do
+  let size = product shape
+  tensor <- emptyTensor shape
+  withDevicePtr tensor $ \dvcptr ->
+    CUDA.pokeArray size dataptr dvcptr
+  return tensor
+
+fromList :: (TensorDataType a, Storable a)
+         => [Int]
+         -> [a]
+         -> IO (IOTensor a)
+fromList shape datalist = do
+  when (product shape /= length datalist) $ ioError $ userError
+    "Shape is incompatible with provided data."
+  withArray datalist $ \dataptr ->
+    makeTensor shape dataptr
+
+toList :: (Storable a) => IOTensor a -> IO [a]
+toList tensor = withDevicePtr tensor (CUDA.peekListArray (product $ shape tensor))
