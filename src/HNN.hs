@@ -2,6 +2,6 @@
 module HNN where
 import Control.Category
 
-import HNN.Tensor
-import HNN.NN
+import HNN.Tensor.Mutable
+import HNN.NN.Mutable
 

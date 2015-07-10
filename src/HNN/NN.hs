@@ -1,118 +1,49 @@
-{-# LANGUAGE ScopedTypeVariables #-}
+{-# LANGUAGE GADTs, ScopedTypeVariables, MultiParamTypeClasses, FlexibleInstances, InstanceSigs #-}
 module HNN.NN where
 
-import Foreign
-import Foreign.C
-import Foreign.Marshal
-import Control.Monad
-import Control.Monad.Reader
-import Data.Proxy
-import qualified Foreign.CUDA as CUDA
-import qualified Foreign.CUDA.CuDNN as CuDNN
+import Control.Category
 
 import HNN.Tensor
+import qualified HNN.NN.Mutable as M
 
-type HNNMonad = ReaderT CuDNN.Handle IO
+-- Type machinery to make it a Category instance.
+data Weights a = None
+               | NodeWeights [Tensor a]
+               | Comp (Weights a) (Weights a)
 
-handleError :: String -> IO CuDNN.Status -> IO ()
-handleError errMsg action = do
-  status <- action
-  when (status /= CuDNN.success) $ do
-    errStr <- CuDNN.getErrorString status >>= peekCString
-    ioError $ userError $ errStr ++ " (" ++ errMsg ++ ")"
+class WeightsClass w a where
+  toWeights :: w -> Weights a
 
-withDescriptor :: (Storable desc)
-               => (Ptr desc -> IO CuDNN.Status) -- creation fct
-               -> (desc -> IO CuDNN.Status) -- set fct
-               -> (desc -> IO CuDNN.Status) -- destroy fct
-               -> (desc -> IO a) -- action to perform
-               -> IO a
-withDescriptor create set destroy action = do
-  desc <- alloca $ \descptr -> do
-    handleError "Couldn't create descriptor." $ create descptr
-    peek descptr
-  handleError "Couldn't set descriptor." $ set desc
-  x <- action desc
-  handleError "Couldn't destroy descriptor." $ destroy desc
-  return x
+instance WeightsClass () a where
+  toWeights () = None
 
-createHandle :: IO (CuDNN.Handle)
-createHandle = alloca $ \hptr -> CuDNN.createHandle hptr >> peek hptr
+instance WeightsClass [Tensor a] a where
+  toWeights tensorlist = NodeWeights tensorlist
 
-convolution2dFwd :: forall a . (Storable a, TensorDataType a)
-                 => CuDNN.Handle
-                 -> CuDNN.ConvolutionFwdAlgo
-                 -> (Int, Int)
-                 -> (Int, Int)
-                 -> (Int, Int)
-                 -> IOTensor a
-                 -> IOTensor a
-                 -> IO (IOTensor a)
-convolution2dFwd
-  handle algo (padh,padw) (strh,strw) (upw,uph) fmaps filters = do
-  -- check inputs  
-  let shapeError = ioError $ userError $
-        "Incompatible feature maps and filters shapes: "
-        ++ show (shape fmaps)
-        ++ " and "
-        ++ show (shape filters)
-  when (nbdims fmaps /= 4 || nbdims filters /= 4) shapeError
-  let [n,c,h,w] = map fromIntegral $ shape fmaps
-      [fn,fc,fh,fw] = map fromIntegral $ shape filters
-      dtype = datatype (Proxy :: Proxy a)
-      [cpadh,cpadw,cstrh,cstrw,cupw,cuph] =
-        map fromIntegral [padh,padw,strh,strw,upw,uph]
-  -- make the descriptors
-  putStrLn "Making source tensor descriptor..."
-  withDescriptor
-    CuDNN.createTensorDescriptor
-    (\desc -> CuDNN.setTensor4dDescriptor desc CuDNN.nchw dtype n c h w)
-    CuDNN.destroyTensorDescriptor $ \inputdesc -> do
-    putStrLn "Making filters descriptor..."
-    withDescriptor
-      CuDNN.createFilterDescriptor
-      (\desc -> CuDNN.setFilter4dDescriptor desc dtype fn fc fh fw)
-      CuDNN.destroyFilterDescriptor $ \filtersdesc -> do
-      putStrLn "Making convolution descriptor..."
-      withDescriptor
-        CuDNN.createConvolutionDescriptor
-        (\desc -> CuDNN.setConvolution2dDescriptor
-                  desc cpadh cpadw cstrh cstrw cuph cupw CuDNN.convolution)
-        CuDNN.destroyConvolutionDescriptor $ \convdesc -> do
-          putStrLn "Computing output shape..."
-          -- computing output shape
-          [outn,outc,outh,outw] <-
-            withMany (const alloca) "bite" $ \[outnp,outcp,outhp,outwp] -> do
-              handleError "Couldn't get convolution output shape." $
-                CuDNN.getConvolution2dForwardOutputDim
-                  convdesc inputdesc filtersdesc outnp outcp outhp outwp
-              forM [outnp,outcp,outhp,outwp] peek
-          putStrLn "Making output tensor descriptor..."
-          withDescriptor
-            CuDNN.createTensorDescriptor
-            (\desc -> CuDNN.setTensor4dDescriptor
-                      desc CuDNN.nchw dtype outn outc outh outw)
-            CuDNN.destroyTensorDescriptor $ \outputdesc -> do
-              -- allocate workspace
-              putStrLn "Computing workspace size..."
-              workspacesize <- alloca $ \wkspcsizeptr -> do
-                handleError "Couldn't compute workspace size." $
-                  CuDNN.getConvolutionForwardWorkspaceSize
-                    handle inputdesc filtersdesc convdesc outputdesc algo wkspcsizeptr
-                peek wkspcsizeptr
-              putStrLn "Allocating workspace..."
-              CUDA.allocaArray (fromIntegral workspacesize) $ \workspace -> do
-                -- allocate alpha and beta
-                putStrLn "Allocating alpha and beta..."
-                withArray [1] $ \alpha -> withArray [1] $ \beta -> do
-                  output <- emptyTensor (map fromIntegral [outn,outc,outh,outw])
-                  -- get raw device pointers to tensor data
-                  withMany withDevicePtr [fmaps,filters,output] $
-                    \[inpptr,filptr,outptr] -> do
-                      -- finally run the damn thing
-                      putStrLn "Computing convolution..."
-                      handleError "Couldn't compute convolution." $
-                        CuDNN.convolutionForward
-                          handle alpha inputdesc inpptr filtersdesc filptr convdesc
-                          algo workspace workspacesize beta outputdesc outptr
-                  return output
+instance (WeightsClass w1 a, WeightsClass w2 a) => WeightsClass (w1, w2) a where
+  toWeights (w1, w2) = Comp (toWeights w1) (toWeights w2)
+
+data NN m a inp out where
+  NN :: (WeightsClass w a)
+     => (w -> inp -> m out) -- forward pass
+     -> (w -> inp -> out -> m (w, inp)) -- backward pass
+     -> NN m a inp out
+
+instance (Monad m) => Category (NN m a) where
+  -- The identity function. Its backward pass just passes the gradient
+  -- from upper layers untouched - after all, it does precisely nothing.
+  id :: NN m a inp inp
+  id = NN idfwd idbwd
+       where idfwd () t = return t
+             idbwd () _ outgrad = return ((), outgrad)
+  -- Composes forward passes in the obvious manner, and intertwines
+  -- the forward passes and backward passes of both to build the new
+  -- backward pass.
+  NN fwdbc bwdbc . NN fwdab bwdab = NN fwdac bwdac
+    where
+      fwdac (w1, w2) a = fwdab w2 a >>= fwdbc w1
+      bwdac (w1, w2) a c = do
+        b <- fwdab w2 a
+        (w1', b') <- bwdbc w1 b c
+        (w2', a') <- bwdab w2 a b'
+        return ((w1', w2'), a')
