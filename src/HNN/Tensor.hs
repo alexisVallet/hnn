@@ -1,5 +1,6 @@
 module HNN.Tensor (
   Tensor
+  , TensorDataType(..)
   , shape
   , nbdims
   , dtype

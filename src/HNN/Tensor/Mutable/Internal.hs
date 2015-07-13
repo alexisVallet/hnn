@@ -25,7 +25,7 @@ import Control.Monad
 import Control.Monad.Primitive
 import Unsafe.Coerce
 
-class (Num a) => TensorDataType a where
+class (Num a, Storable a) => TensorDataType a where
   datatype :: Proxy a -> CuDNN.DataType
 
 instance TensorDataType Float where
@@ -36,7 +36,7 @@ instance TensorDataType Double where
 
 -- mutable tensor
 data MTensor s a where
-  MTensor :: (TensorDataType a, Storable a)
+  MTensor :: (TensorDataType a)
           => [Int] -- shape
           -> ForeignPtr a -- data
           -> MTensor s a
@@ -54,13 +54,13 @@ dtype :: forall m a . (PrimMonad m, TensorDataType a)
       -> m CuDNN.DataType
 dtype _ = return $ datatype (Proxy :: Proxy a)
 
-emptyTensor :: forall m a . (TensorDataType a, Storable a, PrimMonad m)
+emptyTensor :: forall m a . (TensorDataType a, PrimMonad m)
             => [Int] -> m (MTensor (PrimState m) a)
 emptyTensor shape = do
   res <- unsafePrimToPrim $ (emptyTensorIO shape :: IO (IOTensor a))
   return $ unsafeCoerce res
 
-emptyTensorIO :: (TensorDataType a, Storable a) => [Int] -> IO (IOTensor a)
+emptyTensorIO :: (TensorDataType a) => [Int] -> IO (IOTensor a)
 emptyTensorIO shape = do
   let size = product shape
   dvcptr <- CUDA.mallocArray size
@@ -74,7 +74,7 @@ withDevicePtr :: (Storable a) => IOTensor a -> (CUDA.DevicePtr a -> IO b) -> IO 
 withDevicePtr (MTensor _ datafptr) action = do
   withForeignPtr datafptr $ \dataptr -> action (CUDA.DevicePtr dataptr)
 
-makeTensor :: (TensorDataType a, Storable a)
+makeTensor :: (TensorDataType a)
            => [Int]
            -> Ptr a
            -> IO (IOTensor a)
@@ -85,13 +85,13 @@ makeTensor shape dataptr = do
     CUDA.pokeArray size dataptr dvcptr
   return tensor
 
-fromList :: forall m a . (PrimMonad m, TensorDataType a, Storable a)
+fromList :: forall m a . (PrimMonad m, TensorDataType a)
          =>  [Int] -> [a] -> m (MTensor (PrimState m) a)
 fromList shape content = do
   res <- unsafePrimToPrim $ (fromListIO shape content :: IO (IOTensor a))
   return $ unsafeCoerce res
 
-fromListIO :: (TensorDataType a, Storable a)
+fromListIO :: (TensorDataType a)
          => [Int]
          -> [a]
          -> IO (IOTensor a)
@@ -101,11 +101,11 @@ fromListIO shape datalist = do
   withArray datalist $ \dataptr ->
     makeTensor shape dataptr
 
-toList :: (PrimMonad m, TensorDataType a, Storable a)
+toList :: (PrimMonad m, TensorDataType a)
        => MTensor (PrimState m) a -> m [a]
 toList tensor = unsafePrimToPrim $ toListIO (unsafeCoerce tensor)
 
-toListIO :: (Storable a, TensorDataType a) => IOTensor a -> IO [a]
+toListIO :: (TensorDataType a) => IOTensor a -> IO [a]
 toListIO tensor = do
   tensorshape <- shape tensor
   withDevicePtr tensor (CUDA.peekListArray (product tensorshape))

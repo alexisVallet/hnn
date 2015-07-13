@@ -1,6 +1,7 @@
 {-# LANGUAGE GADTs, ForeignFunctionInterface, ScopedTypeVariables #-}
 module HNN.Tensor.Internal (
   Tensor(..)
+  , TensorDataType(..)
   , shape
   , nbdims
   , dtype
@@ -15,7 +16,7 @@ import HNN.Tensor.Mutable.Internal (MTensor(..), TensorDataType(..), fromList, t
 import qualified Foreign.CUDA.CuDNN as CuDNN
 
 data Tensor a where
-  Tensor :: (TensorDataType a, Storable a)
+  Tensor :: (TensorDataType a)
          => [Int]
          -> ForeignPtr a
          -> Tensor a
