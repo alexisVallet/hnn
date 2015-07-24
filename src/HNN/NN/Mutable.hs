@@ -17,6 +17,7 @@ import Control.Monad
 import Data.Proxy
 import qualified Foreign.CUDA as CUDA
 import qualified Foreign.CUDA.CuDNN as CuDNN
+import qualified Foreign.CUDA.Cublas as Cublas
 import Control.Monad.Primitive
 import Unsafe.Coerce
 
@@ -85,6 +86,7 @@ withConvDesc (padh,padw) (strh,strw) (uph,upw) = do
 createHandle :: IO (CuDNN.Handle)
 createHandle = alloca $ \hptr -> CuDNN.createHandle hptr >> peek hptr
 
+-- CuDNN bindings with mutable tensors.
 -- convolution
 convolution2dFwd :: forall m a . (PrimMonad m, TensorDataType a)
                  => CuDNN.Handle
@@ -383,3 +385,143 @@ pooling2dBwdIO handle mode (wh,ww) (padh,padw) (strh,strw) inp out upgrad = do
                   CuDNN.poolingBackward handle pooldesc alphabeta inpdesc inpptr
                   upgraddesc upgradptr outdesc outptr alphabeta graddesc gradptr
                 return grad
+
+-- Softmax
+softmaxFwd :: forall m a . (PrimMonad m, TensorDataType a)
+           => CuDNN.Handle
+           -> CuDNN.SoftmaxAlgorithm
+           -> CuDNN.SoftmaxMode
+           -> MTensor (PrimState m) a
+           -> m (MTensor (PrimState m) a)
+softmaxFwd handle algo mode input = do
+  res <- unsafePrimToPrim $ softmaxFwdIO handle algo mode
+         (unsafeCoerce input :: IOTensor a)
+  return $ unsafeCoerce res
+
+softmaxBwd :: forall m a . (PrimMonad m, TensorDataType a)
+           => CuDNN.Handle
+           -> CuDNN.SoftmaxAlgorithm
+           -> CuDNN.SoftmaxMode
+           -> MTensor (PrimState m) a
+           -> MTensor (PrimState m) a
+           -> m (MTensor (PrimState m) a)
+softmaxBwd handle algo mode src srcdiff = do
+  res <- unsafePrimToPrim $ softmaxBwdIO handle algo mode
+         (unsafeCoerce src :: IOTensor a) (unsafeCoerce srcdiff :: IOTensor a)
+  return $ unsafeCoerce res
+
+softmaxFwdIO :: (TensorDataType a)
+             => CuDNN.Handle
+             -> CuDNN.SoftmaxAlgorithm
+             -> CuDNN.SoftmaxMode
+             -> IOTensor a
+             -> IO (IOTensor a)
+softmaxFwdIO handle algo mode input = do
+  withTensor4d input $ \inpdesc inpptr -> do
+    output <- shape input >>= emptyTensor
+    withTensor4d output $ \outdesc outptr -> do
+      withArray [1] $ \alphabeta -> do
+        handleError "Couldn't compute softmax." $
+          CuDNN.softmaxForward handle algo mode alphabeta
+          inpdesc inpptr alphabeta outdesc outptr
+        return output
+
+softmaxBwdIO :: (TensorDataType a)
+             => CuDNN.Handle
+             -> CuDNN.SoftmaxAlgorithm
+             -> CuDNN.SoftmaxMode
+             -> IOTensor a
+             -> IOTensor a
+             -> IO (IOTensor a)
+softmaxBwdIO handle algo mode src srcdiff = do
+  withTensor4d src $ \srcdesc srcdata -> do
+    withTensor4d srcdiff $ \srcdiffdesc srcdiffdata -> do
+      destdiff <- shape src >>= emptyTensor
+      withTensor4d destdiff $ \destdiffdesc destdiffdata -> do
+        withArray [1] $ \alphabeta -> do
+          handleError "Couldn't compute softmax backward pass." $
+            CuDNN.softmaxBackward handle algo mode alphabeta
+            srcdesc srcdata srcdiffdesc srcdiffdata alphabeta
+            destdiffdesc destdiffdata
+          return destdiff
+
+-- Utility functions leveraging CuBlas.
+-- GEMM wrapper, used to implement roughly everything else.
+-- Computes alpha * dot(A,B) + beta * C, puts the results in C.
+gemmFwdIO :: (TensorDataType a)
+          => Cublas.Handle
+          -> a
+          -> IOTensor a
+          -> IOTensor a
+          -> a
+          -> IOTensor a
+          -> IO ()
+gemmFwdIO handle alpha a b beta c = do
+  -- shape information
+  [m, k] <- shape a
+  [k', n] <- shape b
+  [m', n'] <- shape c
+  when (m /= m' || n /= n' || k /= k') $ ioError $ userError $
+    "Incompatible shapes for GEMM: " ++ show [m,k] ++ " "
+    ++ show [k',n] ++ " " ++ show [m',n']
+  withDevicePtr a $ \aptr -> do
+    withDevicePtr b $ \bptr -> do
+      withDevicePtr c $ \cptr -> do
+        Cublas.gemm handle Cublas.N Cublas.N m n k alpha
+          aptr m bptr k beta cptr m
+
+-- GEMM backward pass with regards to A
+gemmBwdAIO :: (TensorDataType a)
+           => Cublas.Handle
+           -> a
+           -> IOTensor a
+           -> IOTensor a
+           -> IO (IOTensor a)
+gemmBwdAIO handle alpha b upgrad = do
+  -- shape information
+  [k, n] <- shape b
+  [m, n'] <- shape upgrad
+  when (n /= n') $ ioError $ userError $
+    "Incompatible shapes for backward GEMM for A: "
+    ++ show [k,n] ++ " " ++ show [m,n']
+  out <- emptyTensor [m, k]
+  withDevicePtr b $ \bptr -> do
+    withDevicePtr upgrad $ \upgradptr -> do
+      withDevicePtr out $ \outptr -> do
+        Cublas.gemm handle Cublas.N Cublas.T m k n alpha
+          upgradptr m bptr n 0 outptr m
+        return out
+
+-- GEMM backward pass with regards to B
+gemmBwdBIO :: (TensorDataType a)
+           => Cublas.Handle
+           -> a
+           -> IOTensor a
+           -> IOTensor a
+           -> IO (IOTensor a)
+gemmBwdBIO handle alpha a upgrad = do
+  [m, k] <- shape a
+  [m', n] <- shape upgrad
+  when (m /= m') $ ioError $ userError $
+    "Incompatible shapes for backward GEMM for B: "
+    ++ show [m,k] ++ " " ++ show [m',n]
+  out <- emptyTensor [k, n]
+  withDevicePtr a $ \aptr -> do
+    withDevicePtr upgrad $ \upgradptr -> do
+      withDevicePtr out $ \outptr -> do
+        Cublas.gemm handle Cublas.T Cublas.N k n m alpha
+          aptr k upgradptr m 0 outptr k
+        return out
+
+-- GEMM backward pass with regards to C
+gemmBwdCIO :: (TensorDataType a)
+           => Cublas.Handle
+           -> a
+           -> IOTensor a
+           -> IO (IOTensor a)
+gemmBwdCIO handle beta upgrad = do
+  out <- copy upgrad
+  shp <- shape upgrad
+  withDevicePtr upgrad $ \upgradptr -> do
+    Cublas.scal handle (product shp) beta upgradptr 1
+    return out

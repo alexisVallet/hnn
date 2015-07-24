@@ -10,5 +10,7 @@ module HNN.Tensor.Mutable (
   , withDevicePtr
   , fromList
   , toList
+  , zeros
+  , copy
   ) where
 import HNN.Tensor.Mutable.Internal

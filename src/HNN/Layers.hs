@@ -33,7 +33,7 @@ convolution2d :: (TensorDataType s)
               -> Tensor s -- initial filters
               -> NN LayerMonad s (Tensor s) (Tensor s)
 convolution2d algo padding stride upscale initfilters =
-  NN convfwd convbwd initfilters
+  fromFwdBwd convfwd convbwd initfilters
   where convfwd filters fmaps = do
           handle <- view handle
           return $ runST $ do
@@ -64,7 +64,7 @@ activation :: (TensorDataType s)
            =>  CuDNN.ActivationMode
            -> NN LayerMonad s (Tensor s) (Tensor s)
 activation mode =
-  NN actfwd actbwd ()
+  fromFwdBwd actfwd actbwd ()
   where actfwd () fmaps = do
           handle <- view handle
           return $ runST $ do
@@ -88,7 +88,7 @@ pooling2d :: (TensorDataType s)
           -> (Int, Int)
           -> NN LayerMonad s (Tensor s) (Tensor s)
 pooling2d mode size padding stride =
-  NN poolfwd poolbwd ()
+  fromFwdBwd poolfwd poolbwd ()
   where poolfwd () fmaps = do
           handle <- view handle
           return $ runST $ do

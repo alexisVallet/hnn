@@ -10,6 +10,8 @@ module HNN.Tensor.Mutable.Internal (
   , withDevicePtr
   , fromList
   , toList
+  , zeros
+  , copy
   ) where
 import Foreign
 import Foreign.C
@@ -19,19 +21,20 @@ import System.IO.Unsafe
 import Data.List
 import qualified Foreign.CUDA as CUDA
 import qualified Foreign.CUDA.CuDNN as CuDNN
+import qualified Foreign.CUDA.Cublas as Cublas
 import Data.Proxy
 import System.IO.Error
 import Control.Monad
 import Control.Monad.Primitive
 import Unsafe.Coerce
 
-class (Num a, Storable a) => TensorDataType a where
+class (Cublas.Cublas a, Num a, Storable a) => TensorDataType a where
   datatype :: Proxy a -> CuDNN.DataType
 
-instance TensorDataType Float where
+instance TensorDataType CFloat where
   datatype = const CuDNN.float
 
-instance TensorDataType Double where
+instance TensorDataType CDouble where
   datatype = const CuDNN.double
 
 -- mutable tensor
@@ -101,6 +104,10 @@ fromListIO shape datalist = do
   withArray datalist $ \dataptr ->
     makeTensor shape dataptr
 
+zeros :: forall m a . (PrimMonad m, TensorDataType a)
+      => [Int] -> m (MTensor (PrimState m) a)
+zeros shape = fromList shape $ take (product shape) $ repeat 0
+
 toList :: (PrimMonad m, TensorDataType a)
        => MTensor (PrimState m) a -> m [a]
 toList tensor = unsafePrimToPrim $ toListIO (unsafeCoerce tensor)
@@ -109,3 +116,18 @@ toListIO :: (TensorDataType a) => IOTensor a -> IO [a]
 toListIO tensor = do
   tensorshape <- shape tensor
   withDevicePtr tensor (CUDA.peekListArray (product tensorshape))
+
+copy :: forall m a . (PrimMonad m, TensorDataType a)
+     => MTensor (PrimState m) a -> m (MTensor (PrimState m) a)
+copy tensor = do
+  res <- unsafePrimToPrim $ copyIO (unsafeCoerce tensor :: IOTensor a)
+  return $ unsafeCoerce res
+
+copyIO :: (TensorDataType a) => IOTensor a -> IO (IOTensor a)
+copyIO tensor = do
+  shp <- shape tensor
+  out <- emptyTensorIO shp
+  withDevicePtr tensor $ \tensorptr -> do
+    withDevicePtr out $ \outptr -> do
+      CUDA.copyArray (product shp) tensorptr outptr
+      return out
