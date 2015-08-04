@@ -83,25 +83,25 @@ activation mode =
 
 -- Currently, some cudnn pooling utilities are broken, so until
 -- I write a workaround no pooling.
--- pooling2d :: (TensorDataType s)
---           => CuDNN.PoolingMode
---           -> (Int, Int)
---           -> (Int, Int)
---           -> (Int, Int)
---           -> NN LayerMonad s (Tensor s) (Tensor s)
--- pooling2d mode size padding stride =
---   fromFwdBwd poolfwd poolbwd ()
---   where poolfwd () fmaps = do
---           handle <- view handle
---           return $ runST $ do
---             fmaps' <- unsafeThaw fmaps
---             poolres <- pooling2dFwd handle mode size padding stride fmaps'
---             unsafeFreeze poolres
---         poolbwd () inp out upgrad = do
---           handle <- view handle
---           return $ runST $ do
---             [inp', out', upgrad'] <- forM [inp, out, upgrad] unsafeThaw
---             grad <- pooling2dBwd handle mode size padding stride
---                     inp' out' upgrad'
---             grad' <- unsafeFreeze grad
---             return ((), grad')
+pooling2d :: (TensorDataType s)
+          => CuDNN.PoolingMode
+          -> (Int, Int)
+          -> (Int, Int)
+          -> (Int, Int)
+          -> NN LayerMonad s (Tensor s) (Tensor s)
+pooling2d mode size padding stride =
+  fromFwdBwd poolfwd poolbwd ()
+  where poolfwd () fmaps = do
+          handle <- view handle
+          return $ runST $ do
+            fmaps' <- unsafeThaw fmaps
+            poolres <- pooling2dFwd handle mode size padding stride fmaps'
+            unsafeFreeze poolres
+        poolbwd () inp out upgrad = do
+          handle <- view handle
+          return $ runST $ do
+            [inp', out', upgrad'] <- forM [inp, out, upgrad] unsafeThaw
+            grad <- pooling2dBwd handle mode size padding stride
+                    inp' out' upgrad'
+            grad' <- unsafeFreeze grad
+            return ((), grad')

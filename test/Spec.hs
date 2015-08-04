@@ -9,4 +9,4 @@ main = do
   cudnn_handle <- createHandle
   hspec $ do
     test_convolution2dFwd cudnn_handle
-
+    test_pooling2dFwd cudnn_handle

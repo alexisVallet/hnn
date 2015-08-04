@@ -6,8 +6,8 @@ module HNN.NN.Mutable (
   , convolution2dBwdInputs
   , activationFwd
   , activationBwd
-  -- , pooling2dFwd
-  -- , pooling2dBwd
+  , pooling2dFwd
+  , pooling2dBwd
   ) where
 
 import Foreign
@@ -298,98 +298,105 @@ activationBwdIO handle mode input output upgrad = do
             return grad
 
 -- 2d pooling
--- Currently, some of the functions to compute the output shape
--- are apparently absent from the cudnn object file, which makes
--- these not work. Commented out while I work on a workaround.
--- pooling2dFwd :: forall m a . (PrimMonad m, TensorDataType a)
---            => CuDNN.Handle
---            -> CuDNN.PoolingMode
---            -> (Int, Int)
---            -> (Int, Int)
---            -> (Int, Int)
---            -> MTensor (PrimState m) a
---            -> m (MTensor (PrimState m) a)
--- pooling2dFwd handle mode size padding stride input = do
---   out <- unsafePrimToPrim $ pooling2dFwdIO handle mode size padding stride
---          (unsafeCoerce input :: IOTensor a)
---   return $ unsafeCoerce out
+-- Helper to compute output shape.
+pooling2dOutputShape :: (Int,Int) -> (Int,Int) -> (Int,Int) -> [Int] -> [Int]
+pooling2dOutputShape (szr,szc) (padr,padc) (strr, strc) [n,ch,r,c] =
+  [n,ch,outr,outc]
+  where
+    inr = r + padr
+    inc = c + padc
+    outr = (inr - overlap_r) `div` strr
+    outc = (inc - overlap_c) `div` strc
+    overlap_r = max 0 (szr - strr)
+    overlap_c = max 0 (szc - strc)
 
--- pooling2dBwd :: forall m a . (PrimMonad m, TensorDataType a)
---            => CuDNN.Handle
---            -> CuDNN.PoolingMode
---            -> (Int, Int)
---            -> (Int, Int)
---            -> (Int, Int)
---            -> MTensor (PrimState m) a
---            -> MTensor (PrimState m) a
---            -> MTensor (PrimState m) a
---            -> m (MTensor (PrimState m) a)
--- pooling2dBwd handle mode size padding stride inp out upgrad = do
---   grad <- unsafePrimToPrim $ pooling2dBwdIO handle mode size padding stride
---           (unsafeCoerce inp :: IOTensor a) (unsafeCoerce out :: IOTensor a)
---           (unsafeCoerce upgrad :: IOTensor a)
---   return $ unsafeCoerce grad
+pooling2dFwd :: forall m a . (PrimMonad m, TensorDataType a)
+           => CuDNN.Handle
+           -> CuDNN.PoolingMode
+           -> (Int, Int)
+           -> (Int, Int)
+           -> (Int, Int)
+           -> MTensor (PrimState m) a
+           -> m (MTensor (PrimState m) a)
+pooling2dFwd handle mode size padding stride input = do
+  out <- unsafePrimToPrim $ pooling2dFwdIO handle mode size padding stride
+         (unsafeCoerce input :: IOTensor a)
+  return $ unsafeCoerce out
 
--- pooling2dFwdIO :: forall a . (TensorDataType a)
---              => CuDNN.Handle
---              -> CuDNN.PoolingMode
---              -> (Int, Int)
---              -> (Int, Int)
---              -> (Int, Int)
---              -> IOTensor a
---              -> IO (IOTensor a)
--- pooling2dFwdIO handle mode (wh,ww) (padh,padw) (strh,strw) input = do
---   -- pooling descriptor
---   let [cwh,cww,cpadh,cpadw,cstrh,cstrw] =
---         map fromIntegral [wh,ww,padh,padw,strh,strw]
---   withDescriptor
---     CuDNN.createPoolingDescriptor
---     (\d -> CuDNN.setPooling2dDescriptor d mode cwh cww cpadh cpadw cstrh cstrw)
---     CuDNN.destroyPoolingDescriptor $ \pooldesc -> do
---       withTensor4d input $ \inputdesc inputptr -> do
---         -- output shape
---         outshape <- withMany (const alloca) "bite" $ \[outnp,outcp,outhp,outwp] -> do
---           handleError "Couldn't compute pooling output shape." $
---             CuDNN.getPooling2dForwardOutputDim pooldesc inputdesc outnp outcp outhp
---             outwp
---           forM [outnp,outcp,outhp,outwp] peek
---         output <- emptyTensor $ map fromIntegral outshape
---         -- actual pooling
---         withTensor4d output $ \outputdesc outputptr -> do
---           withArray [1] $ \alphabeta -> do
---             handleError "Couldn't compute pooling." $
---               CuDNN.poolingForward handle pooldesc alphabeta inputdesc
---               inputptr alphabeta outputdesc outputptr
---             return output
+pooling2dBwd :: forall m a . (PrimMonad m, TensorDataType a)
+           => CuDNN.Handle
+           -> CuDNN.PoolingMode
+           -> (Int, Int)
+           -> (Int, Int)
+           -> (Int, Int)
+           -> MTensor (PrimState m) a
+           -> MTensor (PrimState m) a
+           -> MTensor (PrimState m) a
+           -> m (MTensor (PrimState m) a)
+pooling2dBwd handle mode size padding stride inp out upgrad = do
+  grad <- unsafePrimToPrim $ pooling2dBwdIO handle mode size padding stride
+          (unsafeCoerce inp :: IOTensor a) (unsafeCoerce out :: IOTensor a)
+          (unsafeCoerce upgrad :: IOTensor a)
+  return $ unsafeCoerce grad
 
--- pooling2dBwdIO :: forall a . (TensorDataType a)
---              => CuDNN.Handle
---              -> CuDNN.PoolingMode
---              -> (Int, Int)
---              -> (Int, Int)
---              -> (Int, Int)
---              -> IOTensor a
---              -> IOTensor a
---              -> IOTensor a
---              -> IO (IOTensor a)
--- pooling2dBwdIO handle mode (wh,ww) (padh,padw) (strh,strw) inp out upgrad = do
---   -- pooling descriptor
---   let [cwh,cww,cpadh,cpadw,cstrh,cstrw] =
---         map fromIntegral [wh,ww,padh,padw,strh,strw]
---   withDescriptor
---     CuDNN.createPoolingDescriptor
---     (\d -> CuDNN.setPooling2dDescriptor d mode cwh cww cpadh cpadw cstrh cstrw)
---     CuDNN.destroyPoolingDescriptor $ \pooldesc -> do
---       withTensor4d inp $ \inpdesc inpptr -> do
---         withTensor4d out $ \outdesc outptr -> do
---           withTensor4d upgrad $ \upgraddesc upgradptr -> do
---             grad <- shape inp >>= emptyTensor
---             withTensor4d grad $ \graddesc gradptr -> do
---               withArray [1] $ \alphabeta -> do
---                 handleError "Couldn't compute backward pooling." $
---                   CuDNN.poolingBackward handle pooldesc alphabeta inpdesc inpptr
---                   upgraddesc upgradptr outdesc outptr alphabeta graddesc gradptr
---                 return grad
+pooling2dFwdIO :: forall a . (TensorDataType a)
+             => CuDNN.Handle
+             -> CuDNN.PoolingMode
+             -> (Int, Int)
+             -> (Int, Int)
+             -> (Int, Int)
+             -> IOTensor a
+             -> IO (IOTensor a)
+pooling2dFwdIO handle mode (wh,ww) (padh,padw) (strh,strw) input = do
+  -- pooling descriptor
+  let [cwh,cww,cpadh,cpadw,cstrh,cstrw] =
+        map fromIntegral [wh,ww,padh,padw,strh,strw]
+  withDescriptor
+    CuDNN.createPoolingDescriptor
+    (\d -> CuDNN.setPooling2dDescriptor d mode cwh cww cpadh cpadw cstrh cstrw)
+    CuDNN.destroyPoolingDescriptor $ \pooldesc -> do
+      withTensor4d input $ \inputdesc inputptr -> do
+        -- output shape
+        inshape <- shape input
+        let
+          outshape = pooling2dOutputShape (wh,ww) (padh,padw) (strh,strw) inshape
+        output <- emptyTensor outshape
+        -- actual pooling
+        withTensor4d output $ \outputdesc outputptr -> do
+          withArray [1] $ \alpha -> withArray [0] $ \beta -> do
+            handleError "Couldn't compute pooling." $
+              CuDNN.poolingForward handle pooldesc alpha inputdesc
+              inputptr beta outputdesc outputptr
+            return output
+
+pooling2dBwdIO :: forall a . (TensorDataType a)
+             => CuDNN.Handle
+             -> CuDNN.PoolingMode
+             -> (Int, Int)
+             -> (Int, Int)
+             -> (Int, Int)
+             -> IOTensor a
+             -> IOTensor a
+             -> IOTensor a
+             -> IO (IOTensor a)
+pooling2dBwdIO handle mode (wh,ww) (padh,padw) (strh,strw) inp out upgrad = do
+  -- pooling descriptor
+  let [cwh,cww,cpadh,cpadw,cstrh,cstrw] =
+        map fromIntegral [wh,ww,padh,padw,strh,strw]
+  withDescriptor
+    CuDNN.createPoolingDescriptor
+    (\d -> CuDNN.setPooling2dDescriptor d mode cwh cww cpadh cpadw cstrh cstrw)
+    CuDNN.destroyPoolingDescriptor $ \pooldesc -> do
+      withTensor4d inp $ \inpdesc inpptr -> do
+        withTensor4d out $ \outdesc outptr -> do
+          withTensor4d upgrad $ \upgraddesc upgradptr -> do
+            grad <- shape inp >>= emptyTensor
+            withTensor4d grad $ \graddesc gradptr -> do
+              withArray [1] $ \alpha -> withArray [0] $ \beta -> do
+                handleError "Couldn't compute backward pooling." $
+                  CuDNN.poolingBackward handle pooldesc alpha inpdesc inpptr
+                  upgraddesc upgradptr outdesc outptr beta graddesc gradptr
+                return grad
 
 -- Softmax
 softmaxFwd :: forall m a . (PrimMonad m, TensorDataType a)

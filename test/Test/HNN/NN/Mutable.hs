@@ -29,3 +29,20 @@ test_convolution2dFwd handle = describe "HNN.NN.Mutable.convolution2dFwd" $ do
         toList conv_tensor
   it "Returns the right result for a simple example" $ do
     convresult `shouldBe` expected_out
+
+test_pooling2dFwd :: CuDNN.Handle -> Spec
+test_pooling2dFwd handle = describe "HNN.NN.Mutable.pooling2dFwd" $ do
+  let fmap = [1..16] :: [CFloat]
+      expected_out = [6, 8,
+                      14,16]
+      (mpresult,mpshape) = runST $ do
+        fmap_tensor <- fromList [1,1,4,4] fmap
+        mp_tensor <- pooling2dFwd handle CuDNN.pooling_max
+                     (3,3) (1,1) (2,2) fmap_tensor
+        coeffs <- toList mp_tensor
+        res_shape <- shape mp_tensor
+        return (coeffs,res_shape)
+  it "Returns the right result for a simple example" $ do
+    mpresult `shouldBe` expected_out
+  it "Returns a result which has the right shape" $ do
+    mpshape `shouldBe` [1,1,2,2]
