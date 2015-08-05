@@ -8,6 +8,12 @@ module HNN.NN.Mutable (
   , activationBwd
   , pooling2dFwd
   , pooling2dBwd
+  , softmaxFwd
+  , softmaxBwd
+  , gemmFwd
+  , gemmBwdA
+  , gemmBwdB
+  , gemmBwdC
   ) where
 
 import Foreign
@@ -459,81 +465,136 @@ softmaxBwdIO handle algo mode src srcdiff = do
 
 -- Utility functions leveraging CuBlas.
 -- GEMM wrapper, used to implement roughly everything else.
--- Computes alpha * dot(A,B) + beta * C, puts the results in C.
+-- Computes alpha * dot(A,B) + beta * C, where all three
+-- matrices are in row-major order.
+-- Serves to implement nearly all the rest, including its
+-- own gradients.
+gemmFwd :: forall m a . (PrimMonad m, TensorDataType a)
+        => Cublas.Handle
+        -> Cublas.Operation
+        -> Cublas.Operation
+        -> a
+        -> MTensor (PrimState m) a
+        -> MTensor (PrimState m) a
+        -> a
+        -> MTensor (PrimState m) a
+        -> m ()
+gemmFwd handle transa transb alpha a b beta c = do
+  unsafePrimToPrim $ gemmFwdIO handle transa transb alpha
+    (unsafeCoerce a :: IOTensor a) (unsafeCoerce b :: IOTensor b) beta
+    (unsafeCoerce c :: IOTensor a)
+
+-- Composes 2 cublas operations into one.
+compop :: Cublas.Operation -> Cublas.Operation -> Cublas.Operation
+compop Cublas.N op = op
+compop op Cublas.N = op
+compop Cublas.T Cublas.T = Cublas.N
+compop op1 op2 = error $ "Unsupported operations: " ++ show (op1, op2)
+
+gemmBwdA :: (PrimMonad m, TensorDataType a)
+         => Cublas.Handle
+         -> Cublas.Operation
+         -> Cublas.Operation
+         -> a
+         -> MTensor (PrimState m) a
+         -> MTensor (PrimState m) a
+         -> MTensor (PrimState m) a
+         -> m ()
+gemmBwdA handle transa transb alpha b upgrad out = do
+  -- Need to distinguish between the case where
+  -- we have an operation on A or not.
+  case transa of
+    Cublas.N -> gemmFwd handle Cublas.N (compop transb Cublas.T)
+                alpha upgrad b 0 out
+    Cublas.T -> gemmFwd handle transb Cublas.T alpha b upgrad 0 out
+
+gemmBwdB :: (PrimMonad m, TensorDataType a)
+         => Cublas.Handle
+         -> Cublas.Operation
+         -> Cublas.Operation
+         -> a
+         -> MTensor (PrimState m) a
+         -> MTensor (PrimState m) a
+         -> MTensor (PrimState m) a
+         -> m ()
+gemmBwdB handle transa transb alpha a upgrad out = do
+  case transb of
+    Cublas.N -> gemmFwd handle (compop transa Cublas.T) Cublas.N alpha
+                a upgrad 0 out
+    Cublas.T -> gemmFwd handle Cublas.T transa alpha upgrad a 0 out
+
+gemmBwdC :: forall m a . (PrimMonad m, TensorDataType a)
+         => Cublas.Handle
+         -> a
+         -> MTensor (PrimState m) a
+         -> MTensor (PrimState m) a
+         -> m ()
+gemmBwdC handle beta upgrad out = do
+  unsafePrimToPrim $ gemmBwdCIO handle beta
+    (unsafeCoerce upgrad :: IOTensor a) (unsafeCoerce out :: IOTensor a)
+  
+gemmBwdCIO :: (TensorDataType a)
+           => Cublas.Handle
+           -> a
+           -> IOTensor a
+           -> IOTensor a
+           -> IO ()
+gemmBwdCIO handle beta upgrad out = do
+  size <- fmap product $ shape upgrad
+  withDevicePtr upgrad $ \upgradptr -> do
+    withDevicePtr out $ \outptr -> do
+      Cublas.copy handle size upgradptr 1 outptr 1
+      Cublas.scal handle size beta outptr 1
+  
 gemmFwdIO :: (TensorDataType a)
           => Cublas.Handle
+          -> Cublas.Operation
+          -> Cublas.Operation
           -> a
           -> IOTensor a
           -> IOTensor a
           -> a
           -> IOTensor a
           -> IO ()
-gemmFwdIO handle alpha a b beta c = do
-  -- shape information
-  [m, k] <- shape a
-  [k', n] <- shape b
-  [m', n'] <- shape c
-  when (m /= m' || n /= n' || k /= k') $ ioError $ userError $
-    "Incompatible shapes for GEMM: " ++ show [m,k] ++ " "
-    ++ show [k',n] ++ " " ++ show [m',n']
+gemmFwdIO handle transa transb alpha a b beta c = do
+  -- Figuring out the parameters to pass GEMM so it does
+  -- the right thing in row-major layout, depending on the
+  -- user requested transforms.
+  [ra, ca] <- shape a
+  [rb, cb] <- shape b
+  [rc, cc] <- shape c
+  -- The rules for m, n and k were derived on paper
+  -- by considering all 4 possible cases, taking into
+  -- account that due to layout differences gemm will
+  -- read all matrices as transpose, in addition to
+  -- the user supplied transformation. This also relies
+  -- on the property that the transpose operation
+  -- will work on both column-major and row-major data
+  -- seamlessly.
+  let shapeError = error $
+        "Incompatible shapes/operations combination for matrix multiplication: "
+        ++ show [ra, ca] ++ ", " ++ show [rb, cb] ++ ", " ++ show [rc, cc]
+        ++ ", " ++ show transa ++ ", " ++ show transb
+  (m, n, k) <- case (transa, transb) of
+    (Cublas.N, Cublas.N) -> do
+      when (ca /= rb) shapeError
+      return (cb, ra, rb)
+    (Cublas.T, Cublas.N) -> do
+      when (ra /= rb) shapeError
+      return (cb, ca, ra)
+    (Cublas.N, Cublas.T) -> do
+      when (ca /= cb) shapeError
+      return (rb, ra, ca)
+    (Cublas.T, Cublas.T) -> do
+      when (ra /= cb) shapeError
+      return (rb, ca, ra)
+  -- since row-major matrices will be read as transposed,
+  -- the leading dimension are their number of columns.
+  let
+    lda = ca
+    ldb = cb
+    ldc = cc
   withDevicePtr a $ \aptr -> do
     withDevicePtr b $ \bptr -> do
       withDevicePtr c $ \cptr -> do
-        Cublas.gemm handle Cublas.N Cublas.N m n k alpha
-          aptr m bptr k beta cptr m
-
--- GEMM backward pass with regards to A
-gemmBwdAIO :: (TensorDataType a)
-           => Cublas.Handle
-           -> a
-           -> IOTensor a
-           -> IOTensor a
-           -> IO (IOTensor a)
-gemmBwdAIO handle alpha b upgrad = do
-  -- shape information
-  [k, n] <- shape b
-  [m, n'] <- shape upgrad
-  when (n /= n') $ ioError $ userError $
-    "Incompatible shapes for backward GEMM for A: "
-    ++ show [k,n] ++ " " ++ show [m,n']
-  out <- emptyTensor [m, k]
-  withDevicePtr b $ \bptr -> do
-    withDevicePtr upgrad $ \upgradptr -> do
-      withDevicePtr out $ \outptr -> do
-        Cublas.gemm handle Cublas.N Cublas.T m k n alpha
-          upgradptr m bptr n 0 outptr m
-        return out
-
--- GEMM backward pass with regards to B
-gemmBwdBIO :: (TensorDataType a)
-           => Cublas.Handle
-           -> a
-           -> IOTensor a
-           -> IOTensor a
-           -> IO (IOTensor a)
-gemmBwdBIO handle alpha a upgrad = do
-  [m, k] <- shape a
-  [m', n] <- shape upgrad
-  when (m /= m') $ ioError $ userError $
-    "Incompatible shapes for backward GEMM for B: "
-    ++ show [m,k] ++ " " ++ show [m',n]
-  out <- emptyTensor [k, n]
-  withDevicePtr a $ \aptr -> do
-    withDevicePtr upgrad $ \upgradptr -> do
-      withDevicePtr out $ \outptr -> do
-        Cublas.gemm handle Cublas.T Cublas.N k n m alpha
-          aptr k upgradptr m 0 outptr k
-        return out
-
--- GEMM backward pass with regards to C
-gemmBwdCIO :: (TensorDataType a)
-           => Cublas.Handle
-           -> a
-           -> IOTensor a
-           -> IO (IOTensor a)
-gemmBwdCIO handle beta upgrad = do
-  out <- copy upgrad
-  shp <- shape upgrad
-  withDevicePtr upgrad $ \upgradptr -> do
-    Cublas.scal handle (product shp) beta upgradptr 1
-    return out
+        Cublas.gemm handle transb transa m n k alpha bptr ldb aptr lda beta cptr ldc
