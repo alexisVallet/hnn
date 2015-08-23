@@ -1,6 +1,6 @@
 {-# LANGUAGE GADTs, ScopedTypeVariables #-}
 module HNN.NN.Mutable (
-  createHandle
+    createHandle
   , convolution2dFwd
   , convolution2dBwdFilters
   , convolution2dBwdInputs
@@ -14,6 +14,8 @@ module HNN.NN.Mutable (
   , gemmBwdA
   , gemmBwdB
   , gemmBwdC
+  , createGenerator
+  , dropoutFwd
   ) where
 
 import Foreign
@@ -24,6 +26,7 @@ import Data.Proxy
 import qualified Foreign.CUDA as CUDA
 import qualified Foreign.CUDA.CuDNN as CuDNN
 import qualified Foreign.CUDA.Cublas as Cublas
+import qualified Foreign.CUDA.CuRAND as CuRAND
 import Control.Monad.Primitive
 import Unsafe.Coerce
 import System.IO.Unsafe
@@ -90,10 +93,9 @@ withConvDesc (padh,padw) (strh,strw) (uph,upw) = do
     (\d -> CuDNN.setConvolution2dDescriptor d cpadh cpadw cstrh cstrw cupw cuph CuDNN.convolution)
     CuDNN.destroyConvolutionDescriptor
 
+-- CuDNN bindings with mutable tensors.
 createHandle :: IO (CuDNN.Handle)
 createHandle = alloca $ \hptr -> CuDNN.createHandle hptr >> peek hptr
-
--- CuDNN bindings with mutable tensors.
 -- convolution
 convolution2dFwd :: forall m a . (PrimMonad m, TensorDataType a)
                  => CuDNN.Handle
@@ -598,3 +600,41 @@ gemmFwdIO handle transa transb alpha a b beta c = do
     withDevicePtr b $ \bptr -> do
       withDevicePtr c $ \cptr -> do
         Cublas.gemm handle transb transa m n k alpha bptr ldb aptr lda beta cptr ldc
+
+-- dropout
+createGenerator :: CuRAND.RngType -> IO (CuRAND.Generator)
+createGenerator rngtype = do
+  alloca $ \genptr -> do
+    CuRAND.createGenerator genptr rngtype
+    peek genptr
+
+dropoutFwd :: forall m a . (PrimMonad m, TensorDataType a)
+           => CuRAND.Generator
+           -> a
+           -> MTensor (PrimState m) a
+           -> m ()
+dropoutFwd gen drop_proba tensor =
+  unsafePrimToPrim
+  $ dropoutFwdIO gen drop_proba (unsafeCoerce tensor :: IOTensor a)
+
+dropoutFwdIO :: (TensorDataType a)
+             => CuRAND.Generator
+             -> a
+             -> IOTensor a
+             -> IO ()
+dropoutFwdIO gen drop_proba tensor = do
+  -- Simple algo for dropout of activations:
+  -- * generate an array of random values between 0 and 1
+  -- * threshold that array with the dropout probability
+  -- * elementwise multiply the input array with it
+  shp <- shape tensor
+  rand_array <- emptyTensor shp
+  let size = fromIntegral $ product shp
+  withDevicePtr tensor $ \tensorptr -> do
+    withDevicePtr rand_array $ \randarrayptr -> do
+      -- generate random array
+      generateUniform gen randarrayptr size
+      -- threshold it
+      thresh randarrayptr size drop_proba randarrayptr
+      -- elementwise multiply
+      mul randarrayptr tensorptr size

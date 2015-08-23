@@ -12,6 +12,7 @@ module HNN.Tensor.Mutable.Internal (
   , toList
   , zeros
   , copy
+  , threshInplace
   ) where
 import Foreign
 import Foreign.C
@@ -22,20 +23,37 @@ import Data.List
 import qualified Foreign.CUDA as CUDA
 import qualified Foreign.CUDA.CuDNN as CuDNN
 import qualified Foreign.CUDA.Cublas as Cublas
+import qualified Foreign.CUDA.CuRAND as CuRAND
 import Data.Proxy
 import System.IO.Error
 import Control.Monad
 import Control.Monad.Primitive
 import Unsafe.Coerce
 
+import qualified HNN.Internal.Cubits as Cubits
+
 class (Cublas.Cublas a, Num a, Storable a) => TensorDataType a where
   datatype :: Proxy a -> CuDNN.DataType
+  -- ad-hoc stuff to cleanly wrap low-level C APIs
+  thresh :: CUDA.DevicePtr a -> CSize -> a -> CUDA.DevicePtr a -> IO ()
+  mul :: CUDA.DevicePtr a -> CUDA.DevicePtr a -> CSize -> IO ()
+  -- curand stuff
+  generateUniform :: CuRAND.Generator
+                  -> CUDA.DevicePtr a
+                  -> CSize
+                  -> IO CuRAND.Status
 
 instance TensorDataType CFloat where
   datatype = const CuDNN.float
+  thresh = Cubits.thresh
+  mul = Cubits.mul
+  generateUniform = CuRAND.generateUniform
 
 instance TensorDataType CDouble where
   datatype = const CuDNN.double
+  thresh = Cubits.threshDouble
+  mul = Cubits.mulDouble
+  generateUniform = CuRAND.generateUniformDouble
 
 -- mutable tensor
 data MTensor s a where
@@ -131,3 +149,13 @@ copyIO tensor = do
     withDevicePtr out $ \outptr -> do
       CUDA.copyArray (product shp) tensorptr outptr
       return out
+
+threshInplace :: (PrimMonad m) => MTensor (PrimState m) CFloat -> CFloat -> m ()
+threshInplace tensor threshold =
+  unsafePrimToPrim $ threshInplaceIO (unsafeCoerce tensor :: IOTensor CFloat) threshold
+
+threshInplaceIO :: IOTensor CFloat -> CFloat -> IO ()
+threshInplaceIO tensor threshold = do
+  size <- fmap (fromIntegral . product) $ shape tensor
+  withDevicePtr tensor $ \tensorptr -> do
+    thresh tensorptr size threshold tensorptr

@@ -12,5 +12,6 @@ module HNN.Tensor.Mutable (
   , toList
   , zeros
   , copy
+  , threshInplace
   ) where
 import HNN.Tensor.Mutable.Internal

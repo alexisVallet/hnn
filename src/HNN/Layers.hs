@@ -2,7 +2,7 @@
 module HNN.Layers (
   convolution2d
   , activation
-  -- , pooling2d
+  , pooling2d
   , CuDNN.ConvolutionFwdAlgo
   , CuDNN.ActivationMode
   , CuDNN.PoolingMode

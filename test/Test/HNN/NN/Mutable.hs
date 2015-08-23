@@ -5,12 +5,13 @@ import Control.Monad
 import Control.Monad.ST
 import Test.Hspec
 import Data.List
-
 import qualified Foreign.CUDA.CuDNN as CuDNN
 import qualified Foreign.CUDA.Cublas as Cublas
 
 import HNN.NN.Mutable
 import HNN.Tensor.Mutable
+
+import Test.HNN.NN.NumericGrad
 
 test_convolution2dFwd :: CuDNN.Handle -> Spec
 test_convolution2dFwd handle = describe "HNN.NN.Mutable.convolution2dFwd" $ do
