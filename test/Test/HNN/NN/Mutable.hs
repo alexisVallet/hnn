@@ -7,6 +7,7 @@ import Test.Hspec
 import Data.List
 import qualified Foreign.CUDA.CuDNN as CuDNN
 import qualified Foreign.CUDA.Cublas as Cublas
+import qualified Foreign.CUDA.CuRAND as CuRAND
 
 import HNN.NN.Mutable
 import HNN.Tensor.Mutable
@@ -122,3 +123,21 @@ test_gemmFwd handle = describe "HNN.NN.Mutable.gemmFwd" $ do
       all (\(x,y) -> abs (x-y) <= eps)
       . zip expected_out
       )
+
+test_dropout :: CuRAND.Generator -> Spec
+test_dropout gen = describe "HNN.NN.Mutable.dropoutFwd" $ do
+  let input_data = [1..256*256] :: [CFloat]
+  it "returns all zeros when drop_proba == 1" $ do
+    let actual_out = runST $ do
+          input <- fromList [1,1,256,256] input_data
+          dropoutFwd gen 1 input
+          toList input
+        expected_out = take (256*256) $ repeat 0 :: [CFloat]
+    actual_out `shouldBe` expected_out
+  it "returns the original tensor when drop_proba == 0" $ do
+    let actual_out = runST $ do
+          input <- fromList [1,1,256,256] input_data
+          dropoutFwd gen 0 input
+          toList input
+        expected_out = input_data
+    actual_out `shouldBe` expected_out

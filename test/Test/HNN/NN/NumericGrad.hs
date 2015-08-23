@@ -14,4 +14,4 @@ numericBwd f x y =
   where finitediff i = (f (shift i h) - f (shift i -h)) / (2*h)
         h = 10E-5
         shift i offset = fromList [x!i + if j == i then offset else 0
-                                   | i <- [1..size x]]
+                                   | j <- [1..size x]]
