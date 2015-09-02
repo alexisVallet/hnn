@@ -38,6 +38,8 @@ test-suite hnn-test
   type:                exitcode-stdio-1.0
   hs-source-dirs:      test
   main-is:             Spec.hs
+  other-modules:       Test.HNN.NN.Mutable
+                     , Test.HNN.Layers
   build-depends:       base >= 4.7 && < 5
                      , hnn >= 0.1 && < 0.2
                      , hcudnn >= 0.1 && < 0.2

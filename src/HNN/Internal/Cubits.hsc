@@ -24,3 +24,26 @@ foreign import ccall unsafe "mul"
 foreign import ccall unsafe "mulDouble"
   mulDouble :: DevicePtr CDouble -> DevicePtr CDouble -> CSize -> IO ()
 
+foreign import ccall unsafe "add"
+  add :: DevicePtr CFloat -> DevicePtr CFloat -> CSize -> IO ()
+
+foreign import ccall unsafe "addDouble"
+  addDouble :: DevicePtr CDouble -> DevicePtr CDouble -> CSize -> IO ()
+
+foreign import ccall unsafe "tabs"
+  tabs :: DevicePtr CFloat -> CSize -> IO ()
+
+foreign import ccall unsafe "tabsDouble"
+  tabsDouble :: DevicePtr CDouble -> CSize -> IO ()
+
+foreign import ccall unsafe "signum"
+  tsignum :: DevicePtr CFloat -> CSize -> IO ()
+
+foreign import ccall unsafe "signumDouble"
+  tsignumDouble :: DevicePtr CDouble -> CSize -> IO ()
+
+foreign import ccall unsafe "subtract"
+  subtract :: DevicePtr CFloat -> DevicePtr CFloat -> CSize -> IO ()
+
+foreign import ccall unsafe "subtractDouble"
+  subtractDouble :: DevicePtr CDouble -> DevicePtr CDouble -> CSize -> IO ()

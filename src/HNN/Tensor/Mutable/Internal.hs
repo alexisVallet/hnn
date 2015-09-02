@@ -36,7 +36,11 @@ class (Cublas.Cublas a, Num a, Storable a) => TensorDataType a where
   datatype :: Proxy a -> CuDNN.DataType
   -- ad-hoc stuff to cleanly wrap low-level C APIs
   thresh :: CUDA.DevicePtr a -> CSize -> a -> CUDA.DevicePtr a -> IO ()
-  mul :: CUDA.DevicePtr a -> CUDA.DevicePtr a -> CSize -> IO ()
+  rawMul :: CUDA.DevicePtr a -> CUDA.DevicePtr a -> CSize -> IO ()
+  rawAdd :: CUDA.DevicePtr a -> CUDA.DevicePtr a -> CSize -> IO ()
+  rawAbs :: CUDA.DevicePtr a -> CSize -> IO ()
+  rawSignum :: CUDA.DevicePtr a -> CSize -> IO ()
+  rawSubtract :: CUDA.DevicePtr a -> CUDA.DevicePtr a -> CSize -> IO ()
   -- curand stuff
   generateUniform :: CuRAND.Generator
                   -> CUDA.DevicePtr a
@@ -46,13 +50,21 @@ class (Cublas.Cublas a, Num a, Storable a) => TensorDataType a where
 instance TensorDataType CFloat where
   datatype = const CuDNN.float
   thresh = Cubits.thresh
-  mul = Cubits.mul
+  rawMul = Cubits.mul
+  rawAdd = Cubits.add
+  rawAbs = Cubits.tabs
+  rawSignum = Cubits.tsignum
+  rawSubtract = Cubits.subtract
   generateUniform = CuRAND.generateUniform
 
 instance TensorDataType CDouble where
   datatype = const CuDNN.double
   thresh = Cubits.threshDouble
-  mul = Cubits.mulDouble
+  rawMul = Cubits.mulDouble
+  rawAdd = Cubits.addDouble
+  rawAbs = Cubits.tabsDouble
+  rawSignum = Cubits.tsignumDouble
+  rawSubtract = Cubits.subtractDouble
   generateUniform = CuRAND.generateUniformDouble
 
 -- mutable tensor

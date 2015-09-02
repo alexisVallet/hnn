@@ -12,8 +12,6 @@ import qualified Foreign.CUDA.CuRAND as CuRAND
 import HNN.NN.Mutable
 import HNN.Tensor.Mutable
 
-import Test.HNN.NN.NumericGrad
-
 test_convolution2dFwd :: CuDNN.Handle -> Spec
 test_convolution2dFwd handle = describe "HNN.NN.Mutable.convolution2dFwd" $ do
   let filter = [0, 1, 0,
@@ -123,21 +121,3 @@ test_gemmFwd handle = describe "HNN.NN.Mutable.gemmFwd" $ do
       all (\(x,y) -> abs (x-y) <= eps)
       . zip expected_out
       )
-
-test_dropout :: CuRAND.Generator -> Spec
-test_dropout gen = describe "HNN.NN.Mutable.dropoutFwd" $ do
-  let input_data = [1..256*256] :: [CFloat]
-  it "returns all zeros when drop_proba == 1" $ do
-    let actual_out = runST $ do
-          input <- fromList [1,1,256,256] input_data
-          dropoutFwd gen 1 input
-          toList input
-        expected_out = take (256*256) $ repeat 0 :: [CFloat]
-    actual_out `shouldBe` expected_out
-  it "returns the original tensor when drop_proba == 0" $ do
-    let actual_out = runST $ do
-          input <- fromList [1,1,256,256] input_data
-          dropoutFwd gen 0 input
-          toList input
-        expected_out = input_data
-    actual_out `shouldBe` expected_out

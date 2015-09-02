@@ -15,7 +15,8 @@ module HNN.NN.Mutable (
   , gemmBwdB
   , gemmBwdC
   , createGenerator
-  , dropoutFwd
+  , dropoutMaskIO
+  , mul
   ) where
 
 import Foreign
@@ -93,9 +94,11 @@ withConvDesc (padh,padw) (strh,strw) (uph,upw) = do
     (\d -> CuDNN.setConvolution2dDescriptor d cpadh cpadw cstrh cstrw cupw cuph CuDNN.convolution)
     CuDNN.destroyConvolutionDescriptor
 
+
 -- CuDNN bindings with mutable tensors.
 createHandle :: IO (CuDNN.Handle)
 createHandle = alloca $ \hptr -> CuDNN.createHandle hptr >> peek hptr
+
 -- convolution
 convolution2dFwd :: forall m a . (PrimMonad m, TensorDataType a)
                  => CuDNN.Handle
@@ -608,33 +611,42 @@ createGenerator rngtype = do
     CuRAND.createGenerator genptr rngtype
     peek genptr
 
-dropoutFwd :: forall m a . (PrimMonad m, TensorDataType a)
-           => CuRAND.Generator
-           -> a
-           -> MTensor (PrimState m) a
-           -> m ()
-dropoutFwd gen drop_proba tensor =
-  unsafePrimToPrim
-  $ dropoutFwdIO gen drop_proba (unsafeCoerce tensor :: IOTensor a)
-
-dropoutFwdIO :: (TensorDataType a)
-             => CuRAND.Generator
-             -> a
-             -> IOTensor a
-             -> IO ()
-dropoutFwdIO gen drop_proba tensor = do
+-- compute a random mask of ones and zeros
+-- to apply elementwise to the input tensor.
+dropoutMaskIO :: TensorDataType a
+              => CuRAND.Generator
+              -> a
+              -> [Int]
+              -> IO (IOTensor a)
+dropoutMaskIO gen drop_proba shp = do
   -- Simple algo for dropout of activations:
   -- * generate an array of random values between 0 and 1
   -- * threshold that array with the dropout probability
   -- * elementwise multiply the input array with it
-  shp <- shape tensor
   rand_array <- emptyTensor shp
   let size = fromIntegral $ product shp
-  withDevicePtr tensor $ \tensorptr -> do
-    withDevicePtr rand_array $ \randarrayptr -> do
-      -- generate random array
-      generateUniform gen randarrayptr size
-      -- threshold it
-      thresh randarrayptr size drop_proba randarrayptr
-      -- elementwise multiply
-      mul randarrayptr tensorptr size
+  withDevicePtr rand_array $ \randarrayptr -> do
+    -- generate random array
+    generateUniform gen randarrayptr size
+    -- threshold it
+    thresh randarrayptr size drop_proba randarrayptr
+    return rand_array
+
+-- element-wise multiply (in place)
+mul :: forall a m . (TensorDataType a, PrimMonad m)
+    => MTensor (PrimState m) a
+    -> MTensor (PrimState m) a
+    -> m ()
+mul t1 t2 =
+  unsafePrimToPrim $ mulIO
+  (unsafeCoerce t1 :: IOTensor a) (unsafeCoerce t2 :: IOTensor a)
+
+mulIO :: TensorDataType a
+      => IOTensor a
+      -> IOTensor a
+      -> IO ()
+mulIO t1 t2 = do
+  size <- fmap (fromIntegral . product) $ shape t1
+  withDevicePtr t1 $ \t1ptr ->
+    withDevicePtr t2 $ \t2ptr -> do
+      rawMul t1ptr t2ptr size
