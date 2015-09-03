@@ -47,3 +47,15 @@ foreign import ccall unsafe "subtract"
 
 foreign import ccall unsafe "subtractDouble"
   subtractDouble :: DevicePtr CDouble -> DevicePtr CDouble -> CSize -> IO ()
+
+foreign import ccall unsafe "negate"
+  tnegate :: DevicePtr CFloat -> CSize -> IO ()
+
+foreign import ccall unsafe "negateDouble"
+  tnegateDouble :: DevicePtr CDouble -> CSize -> IO ()
+
+foreign import ccall unsafe "scale"
+  scale :: CFloat -> DevicePtr CFloat -> CSize -> IO ()
+
+foreign import ccall unsafe "scaleDouble"
+  scaleDouble :: CDouble -> DevicePtr CDouble -> CSize -> IO ()

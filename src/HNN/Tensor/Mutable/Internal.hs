@@ -41,6 +41,8 @@ class (Cublas.Cublas a, Num a, Storable a) => TensorDataType a where
   rawAbs :: CUDA.DevicePtr a -> CSize -> IO ()
   rawSignum :: CUDA.DevicePtr a -> CSize -> IO ()
   rawSubtract :: CUDA.DevicePtr a -> CUDA.DevicePtr a -> CSize -> IO ()
+  rawNegate :: CUDA.DevicePtr a -> CSize -> IO ()
+  rawScale :: a -> CUDA.DevicePtr a -> CSize -> IO ()
   -- curand stuff
   generateUniform :: CuRAND.Generator
                   -> CUDA.DevicePtr a
@@ -55,6 +57,8 @@ instance TensorDataType CFloat where
   rawAbs = Cubits.tabs
   rawSignum = Cubits.tsignum
   rawSubtract = Cubits.subtract
+  rawNegate = Cubits.tnegate
+  rawScale = Cubits.scale
   generateUniform = CuRAND.generateUniform
 
 instance TensorDataType CDouble where
@@ -65,6 +69,8 @@ instance TensorDataType CDouble where
   rawAbs = Cubits.tabsDouble
   rawSignum = Cubits.tsignumDouble
   rawSubtract = Cubits.subtractDouble
+  rawNegate = Cubits.tnegateDouble
+  rawScale = Cubits.scaleDouble
   generateUniform = CuRAND.generateUniformDouble
 
 -- mutable tensor

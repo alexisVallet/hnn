@@ -1,4 +1,4 @@
-{-# LANGUAGE GADTs, ForeignFunctionInterface, ScopedTypeVariables #-}
+{-# LANGUAGE GADTs, ForeignFunctionInterface, ScopedTypeVariables, TypeFamilies #-}
 module HNN.Tensor.Internal (
   Tensor(..)
   , MT.TensorDataType
@@ -14,9 +14,11 @@ import Foreign
 import Data.Proxy
 import Control.Monad.Primitive
 import System.IO.Unsafe
+import Data.VectorSpace
 
 import qualified HNN.Tensor.Mutable.Internal as MT
 import qualified Foreign.CUDA.CuDNN as CuDNN
+import qualified Foreign.CUDA.Cublas as CuBlas
 
 data Tensor a where
   Tensor :: (MT.TensorDataType a)
@@ -50,38 +52,62 @@ toList t = unsafePerformIO $ unsafeThaw t >>= MT.toList
 -- elementwise Num instance
 checkShape :: Tensor a -> Tensor a -> b -> b
 checkShape t1 t2 x =
-  if shape t1 /= shape t2
+  if (shape t1 /= shape t2)
   then error $ "Incompatible shape for elementwise operation: " ++ show (shape t1) ++ ", " ++ show (shape t2)
   else x
 
+-- broadcasting (only from scalars for now)
+-- Very ugly CPU solution.
+broadcast :: (MT.TensorDataType a) => Tensor a -> Tensor a -> (Tensor a, Tensor a)
+broadcast t1 t2 =
+  (broadcast_helper t1 t2, broadcast_helper t2 t1)
+  where broadcast_helper t1' t2' =
+          case shape t1' of
+            [1] -> fromList (shape t2')
+                   $ take (product $ shape t2')
+                   $ repeat $ head $ toList t1'
+            _ -> t1'
+
 instance (MT.TensorDataType a) => Num (Tensor a) where
-  t1 + t2 = checkShape t1 t2 $ unsafePerformIO $ do
-    t1' <- unsafeThaw t1
-    t2' <- unsafeThaw t2
-    t3' <- MT.copy t2'
-    let size = fromIntegral $ product $ shape t1
-    MT.withDevicePtr t1' $ \t1ptr -> do
-      MT.withDevicePtr t3' $ \t3ptr -> do
-        MT.rawAdd t1ptr t3ptr size
-    unsafeFreeze t3'
-  t1 * t2 = checkShape t1 t2 $ unsafePerformIO $ do
-    t1' <- unsafeThaw t1
-    t2' <- unsafeThaw t2
-    t3' <- MT.copy t2'
-    let size = fromIntegral $ product $ shape t1
-    MT.withDevicePtr t1' $ \t1ptr -> do
-      MT.withDevicePtr t3' $ \t3ptr -> do
-        MT.rawMul t1ptr t3ptr size
-    unsafeFreeze t3'
-  t1 - t2 = checkShape t1 t2 $ unsafePerformIO $ do
-    t1' <- unsafeThaw t1
-    t2' <- unsafeThaw t2
-    t3' <- MT.copy t2'
-    let size = fromIntegral $ product $ shape t1
-    MT.withDevicePtr t1' $ \t1ptr -> do
-      MT.withDevicePtr t3' $ \t3ptr -> do
-        MT.rawSubtract t1ptr t3ptr size
-    unsafeFreeze t3'
+  _t1 + _t2 =
+    let (t1, t2) = broadcast _t1 _t2 in
+    checkShape t1 t2 $ unsafePerformIO $ do
+      t1' <- unsafeThaw t1
+      t2' <- unsafeThaw t2
+      t3' <- MT.copy t2'
+      let size = fromIntegral $ product $ shape t1
+      MT.withDevicePtr t1' $ \t1ptr -> do
+        MT.withDevicePtr t3' $ \t3ptr -> do
+          MT.rawAdd t1ptr t3ptr size
+      unsafeFreeze t3'
+  _t1 * _t2 =
+    let (t1, t2) = broadcast _t1 _t2 in
+    checkShape t1 t2 $ unsafePerformIO $ do
+      t1' <- unsafeThaw t1
+      t2' <- unsafeThaw t2
+      t3' <- MT.copy t2'
+      let size = fromIntegral $ product $ shape t1
+      MT.withDevicePtr t1' $ \t1ptr -> do
+        MT.withDevicePtr t3' $ \t3ptr -> do
+          MT.rawMul t1ptr t3ptr size
+      unsafeFreeze t3'
+  _t1 - _t2 =
+    let (t1, t2) = broadcast _t1 _t2 in
+    checkShape t1 t2 $ unsafePerformIO $ do
+      t1' <- unsafeThaw t1
+      t2' <- unsafeThaw t2
+      t3' <- MT.copy t2'
+      let size = fromIntegral $ product $ shape t1
+      MT.withDevicePtr t1' $ \t1ptr -> do
+        MT.withDevicePtr t3' $ \t3ptr -> do
+          MT.rawSubtract t1ptr t3ptr size
+      unsafeFreeze t3'
+  negate t = unsafePerformIO $ do
+    res <- unsafeThaw t >>= MT.copy
+    let size = fromIntegral $ product $ shape t
+    MT.withDevicePtr res $ \resptr -> do
+      MT.rawNegate resptr size
+    unsafeFreeze res
   signum t = unsafePerformIO $ do
     res <- unsafeThaw t >>= MT.copy
     let size = fromIntegral $ product $ shape t
@@ -89,3 +115,18 @@ instance (MT.TensorDataType a) => Num (Tensor a) where
       MT.rawSignum resptr size
     unsafeFreeze res
   fromInteger i = fromList [1] [fromIntegral i]
+
+-- Vector space instance for Tensors.
+instance (MT.TensorDataType a) => AdditiveGroup (Tensor a) where
+  zeroV = fromInteger 0
+  t1 ^+^ t2 = t1 + t2
+  negateV t = negate t
+
+instance (MT.TensorDataType a) => VectorSpace (Tensor a) where
+  type Scalar (Tensor a) = a
+  x *^ t = unsafePerformIO $ do -- TODO: somehow use Cublas's scal instead
+    res <- unsafeThaw t >>= MT.copy
+    let size = fromIntegral $ product $ shape t
+    MT.withDevicePtr res $ \resptr -> do
+      MT.rawScale x resptr size
+    unsafeFreeze res

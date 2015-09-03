@@ -31,6 +31,7 @@ library
                      , primitive >= 0.6 && < 0.7
                      , lens >= 4.7 && < 5
                      , cublas >= 0.2.1 && < 0.3
+                     , vector-space >= 0.9 && < 0.11
   default-language:    Haskell2010
   Extra-libraries:     hnn_cubits
 
@@ -40,6 +41,7 @@ test-suite hnn-test
   main-is:             Spec.hs
   other-modules:       Test.HNN.NN.Mutable
                      , Test.HNN.Layers
+                     , Test.HNN.NN.NumericGrad
   build-depends:       base >= 4.7 && < 5
                      , hnn >= 0.1 && < 0.2
                      , hcudnn >= 0.1 && < 0.2

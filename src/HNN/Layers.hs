@@ -36,15 +36,16 @@ makeLenses ''LayerReader
 
 type LayerMonad  = ReaderT LayerReader IO
 
+type Layer a w = NN LayerMonad a w (Tensor a) (Tensor a)
+
 convolution2d :: (TensorDataType a)
               => CuDNN.ConvolutionFwdAlgo
               -> (Int, Int)
               -> (Int, Int)
               -> (Int, Int)
-              -> Tensor a -- initial filters
-              -> NN LayerMonad a (Tensor a) (Tensor a)
-convolution2d algo padding stride upscale initfilters =
-  fromFwdBwd convfwd convbwd initfilters
+              -> Layer a (Tensor a)
+convolution2d algo padding stride upscale =
+  fromFwdBwd convfwd convbwd
   where convfwd filters fmaps = do
           handle <- view cudnnHandle
           return $ runST $ do
@@ -72,17 +73,17 @@ convolution2d algo padding stride upscale initfilters =
           return $ \upgrad -> (bwdfilters upgrad, bwdinputs upgrad)
 
 activation :: (TensorDataType a)
-           =>  CuDNN.ActivationMode
-           -> NN LayerMonad a (Tensor a) (Tensor a)
+           => CuDNN.ActivationMode
+           -> Layer a (Trivial a)
 activation mode =
-  fromFwdBwd actfwd actbwd ()
-  where actfwd () fmaps = do
+  fromFwdBwd actfwd actbwd
+  where actfwd Zero fmaps = do
           handle <- view cudnnHandle
           return $ runST $ do
             fmaps' <- unsafeThaw fmaps
             activations <- activationFwd handle mode fmaps'
             unsafeFreeze activations
-        actbwd () inp out = do
+        actbwd Zero inp out = do
           handle <- view cudnnHandle
           return $ \upgrad -> runST $ do
             inp' <- unsafeThaw inp
@@ -90,7 +91,7 @@ activation mode =
             upgrad' <- unsafeThaw upgrad
             grad <- activationBwd handle mode inp' out' upgrad'
             grad' <- unsafeFreeze grad
-            return ((), grad')
+            return (Zero, grad')
 
 -- pooling
 pooling2d :: (TensorDataType a)
@@ -98,37 +99,37 @@ pooling2d :: (TensorDataType a)
           -> (Int, Int)
           -> (Int, Int)
           -> (Int, Int)
-          -> NN LayerMonad a (Tensor a) (Tensor a)
+          -> Layer a (Trivial a)
 pooling2d mode size padding stride =
-  fromFwdBwd poolfwd poolbwd ()
-  where poolfwd () fmaps = do
+  fromFwdBwd poolfwd poolbwd
+  where poolfwd Zero fmaps = do
           handle <- view cudnnHandle
           return $ runST $ do
             fmaps' <- unsafeThaw fmaps
             poolres <- pooling2dFwd handle mode size padding stride fmaps'
             unsafeFreeze poolres
-        poolbwd () inp out = do
+        poolbwd Zero inp out = do
           handle <- view cudnnHandle
           return $ \upgrad -> runST $ do
             [inp', out', upgrad'] <- forM [inp, out, upgrad] unsafeThaw
             grad <- pooling2dBwd handle mode size padding stride
                     inp' out' upgrad'
             grad' <- unsafeFreeze grad
-            return ((), grad')
+            return (Zero, grad')
 
 -- dropout
 dropout :: (TensorDataType a)
         => a
-        -> NN LayerMonad a (Tensor a) (Tensor a)
-dropout drop_proba = NN fwdbwd ()
+        -> Layer a (Trivial a)
+dropout drop_proba = NN fwdbwd
   -- Simple dropout algo: generate a random tensor of 0 and 1s,
   -- elementwise multiply with the same random tensor on both forward
   -- and backward pass.
-  where fwdbwd () inp = do
+  where fwdbwd Zero inp = do
           gen <- view generator
           mask <- liftIO $ dropoutMaskIO gen drop_proba (shape inp)
           pure_mask <- unsafeFreeze mask
-          return (inp * pure_mask, \upgrad -> ((), upgrad * pure_mask))
+          return (inp * pure_mask, \upgrad -> (Zero, upgrad * pure_mask))
 
 -- Actually running the thing.
 runLayer :: CULLong -> LayerMonad a -> IO a
