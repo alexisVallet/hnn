@@ -63,7 +63,14 @@ fromFwdBwd fwd bwd = NN fwdbwd
           bwdpure <- bwd w inp fwdres
           return (fwdres, bwdpure)
 
--- Composes forward passes keeping weights separate.
+-- Composes forward passes keeping weights separate. This forms a category
+-- structure, but cannot be made an instance of the standard Category type class
+-- without discarding type information about the weights. It is obviously useful
+-- to build regular feed-forward neural nets, but other categorical constructs
+-- seem weird. Catamorphisms and Anamorphisms basically turn this into infinite
+-- depth neural networks. Haven't found a way to make GHC deal with the types
+-- yet, not sure it can deal with it at runtime either, but it's an intriguing
+-- theoretical construct.
 (<+>) :: Monad m => NN m s w1 b c -> NN m s w2 a b -> NN m s (w1, w2) a c
 NN fwdbwdbc <+> NN fwdbwdab = NN fwdbwdac
   where fwdbwdac (w1,w2) a = do
@@ -72,6 +79,24 @@ NN fwdbwdbc <+> NN fwdbwdab = NN fwdbwdac
           return (fwdbcres, \cgrad -> let (w1grad, bgrad) = bwdbc cgrad
                                           (w2grad, agrad) = bwdab bgrad in
                                       ((w1grad, w2grad), agrad))
+
+-- We require weights to form a vector space over the tensor scalar datatype.
+-- This category instance requires weights to be shared between composed
+-- layers. So they should have the same weight type, and individual tensors
+-- making up this weight type should have the same shape.
+-- This Category instance composes neural nets so they share weights - as
+-- in the successive applications of the same layer in a recurrent network.
+instance (Monad m, VectorSpace w) => Category (NN m s w) where
+  id = fromFwdBwd idFwd idBwd
+    where idFwd _ inp = return inp
+          idBwd _ _ _ = return $ \upgrad -> (zeroV, upgrad)
+  NN fwdbwdbc . NN fwdbwdab = NN fwdbwdac
+    where fwdbwdac w a = do
+            (fwdabres, bwdab) <- fwdbwdab w a
+            (fwdbcres, bwdbc) <- fwdbwdbc w fwdabres
+            return (fwdbcres, \cgrad -> let (wgrad1, bgrad) = bwdbc cgrad
+                                            (wgrad2, agrad) = bwdab bgrad in
+                                        (wgrad1 ^+^ wgrad2, agrad))
 
 -- For convenience, we define trivial vector spaces for layers which do
 -- not have any weights. The parameter is for the corresponding scalar type.
@@ -85,22 +110,6 @@ instance AdditiveGroup (Trivial a) where
 instance VectorSpace (Trivial a) where
   type Scalar (Trivial a) = a
   s *^ Zero = Zero
-
--- We require weights to form a vector space over the tensor scalar datatype.
--- This category instance requires weights to be shared between composed
--- layers. So they should have the same weight type, and individual tensors
--- making up this weight type should have the same shape.
-instance (Monad m, VectorSpace w) => Category (NN m s w) where
-  id = fromFwdBwd idFwd idBwd
-    where idFwd _ inp = return inp
-          idBwd _ _ _ = return $ \upgrad -> (zeroV, upgrad)
-  NN fwdbwdbc . NN fwdbwdab = NN fwdbwdac
-    where fwdbwdac w a = do
-            (fwdabres, bwdab) <- fwdbwdab w a
-            (fwdbcres, bwdbc) <- fwdbwdbc w fwdabres
-            return (fwdbcres, \cgrad -> let (wgrad1, bgrad) = bwdbc cgrad
-                                            (wgrad2, agrad) = bwdab bgrad in
-                                        (wgrad1 ^+^ wgrad2, agrad))
 
 -- Functors, catamorphisms and anamorphisms in the
 -- neural net categories.

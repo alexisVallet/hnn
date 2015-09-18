@@ -20,3 +20,5 @@ main = do
     test_gemmFwd cublas_handle
     -- HNN.Layers
     test_dropout
+    test_linear
+    test_sumCols

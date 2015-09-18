@@ -13,5 +13,8 @@ module HNN.Tensor.Mutable (
   , zeros
   , copy
   , threshInplace
+  , tlog
+  , inv
+  , reshape
   ) where
 import HNN.Tensor.Mutable.Internal

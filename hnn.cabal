@@ -21,6 +21,7 @@ library
                      , HNN.NN
                      , HNN.Layers
                      , HNN.Internal.Cubits
+                     , HNN.Data
   other-modules:       HNN.Tensor.Internal
                      , HNN.Tensor.Mutable.Internal
   build-depends:       base >= 4.7 && < 5
@@ -32,6 +33,13 @@ library
                      , lens >= 4.7 && < 5
                      , cublas >= 0.2.1 && < 0.3
                      , vector-space >= 0.9 && < 0.11
+                     , friday >= 0.2 && < 0.3
+                     , friday-devil >= 0.1 && < 0.2
+                     , pipes >= 4.1 && < 4.2
+                     , directory >= 1.2 && < 1.3
+                     , filepath >= 1.3 && < 1.4
+                     , vector >= 0.10 && < 0.11
+                     , MonadRandom >= 0.3 && < 0.4
   default-language:    Haskell2010
   Extra-libraries:     hnn_cubits
 
@@ -50,6 +58,7 @@ test-suite hnn-test
                      , hspec >= 2.1 && < 2.2
                      , QuickCheck >= 2.5.1
                      , cublas >= 0.2.1 && < 0.3
+                     , vector-space >= 0.9 && < 0.11
   ghc-options:         -threaded -rtsopts -with-rtsopts=-N
   default-language:    Haskell2010
 

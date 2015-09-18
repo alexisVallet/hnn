@@ -5,18 +5,24 @@ module HNN.Tensor.Internal (
   , shape
   , nbdims
   , dtype
+  , reshape
   , unsafeFreeze
   , unsafeThaw
   , fromList
   , toList
+  , fromVector
+  , toVector
   ) where
 import Foreign
 import Data.Proxy
 import Control.Monad.Primitive
 import System.IO.Unsafe
 import Data.VectorSpace
+import qualified Data.Vector.Storable as SV
+import qualified Data.Vector.Storable.Mutable as SMV
 
 import qualified HNN.Tensor.Mutable.Internal as MT
+import qualified Foreign.CUDA as CUDA
 import qualified Foreign.CUDA.CuDNN as CuDNN
 import qualified Foreign.CUDA.Cublas as CuBlas
 
@@ -31,6 +37,12 @@ shape (Tensor shp _) = shp
 
 nbdims :: Tensor a -> Int
 nbdims = length . shape
+
+reshape :: [Int] -> Tensor a -> Tensor a
+reshape newshp (Tensor oldshp ptr) =
+  if product newshp == product oldshp
+  then Tensor newshp ptr
+  else error $ "Incompatible shapes for reshaping: " ++ show oldshp ++ ", " ++ show newshp
 
 dtype :: forall a . (MT.TensorDataType a) => Tensor a -> CuDNN.DataType
 dtype _ = MT.datatype (Proxy :: Proxy a)
@@ -48,6 +60,25 @@ fromList shape value = unsafePerformIO $ MT.fromList shape value >>= unsafeFreez
 
 toList :: (MT.TensorDataType a) => Tensor a -> [a]
 toList t = unsafePerformIO $ unsafeThaw t >>= MT.toList
+
+-- conversion to/from storable based vectors
+fromVector :: (MT.TensorDataType a) => [Int] -> SV.Vector a -> Tensor a
+fromVector shape value = unsafePerformIO $ do
+  res <- MT.emptyTensor shape
+  SV.unsafeWith value $ \vptr -> do
+    MT.withDevicePtr res $ \resptr -> do
+      CUDA.pokeArray (product shape) vptr resptr
+  unsafeFreeze res
+
+toVector :: (MT.TensorDataType a) => Tensor a -> SV.Vector a
+toVector t = unsafePerformIO $ do
+  let size = product $ shape t
+  res <- SMV.new size
+  mt <- unsafeThaw t
+  SMV.unsafeWith res $ \resptr -> do
+    MT.withDevicePtr mt $ \mtptr -> do
+      CUDA.peekArray size mtptr resptr
+  SV.unsafeFreeze res
 
 -- elementwise Num instance
 checkShape :: Tensor a -> Tensor a -> b -> b

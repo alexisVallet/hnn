@@ -13,6 +13,9 @@ module HNN.Tensor.Mutable.Internal (
   , zeros
   , copy
   , threshInplace
+  , tlog
+  , inv
+  , reshape
   ) where
 import Foreign
 import Foreign.C
@@ -43,6 +46,8 @@ class (Cublas.Cublas a, Num a, Storable a) => TensorDataType a where
   rawSubtract :: CUDA.DevicePtr a -> CUDA.DevicePtr a -> CSize -> IO ()
   rawNegate :: CUDA.DevicePtr a -> CSize -> IO ()
   rawScale :: a -> CUDA.DevicePtr a -> CSize -> IO ()
+  rawLog :: CUDA.DevicePtr a -> CSize -> IO ()
+  rawInv :: CUDA.DevicePtr a -> CSize -> IO ()
   -- curand stuff
   generateUniform :: CuRAND.Generator
                   -> CUDA.DevicePtr a
@@ -59,6 +64,8 @@ instance TensorDataType CFloat where
   rawSubtract = Cubits.subtract
   rawNegate = Cubits.tnegate
   rawScale = Cubits.scale
+  rawLog = Cubits.logFloat
+  rawInv = Cubits.inv
   generateUniform = CuRAND.generateUniform
 
 instance TensorDataType CDouble where
@@ -71,6 +78,8 @@ instance TensorDataType CDouble where
   rawSubtract = Cubits.subtractDouble
   rawNegate = Cubits.tnegateDouble
   rawScale = Cubits.scaleDouble
+  rawLog = Cubits.logDouble
+  rawInv = Cubits.invDouble
   generateUniform = CuRAND.generateUniformDouble
 
 -- mutable tensor
@@ -177,3 +186,26 @@ threshInplaceIO tensor threshold = do
   size <- fmap (fromIntegral . product) $ shape tensor
   withDevicePtr tensor $ \tensorptr -> do
     thresh tensorptr size threshold tensorptr
+
+tlog :: forall m a . (PrimMonad m, TensorDataType a)
+    => MTensor (PrimState m) a -> m ()
+tlog tensor = unsafePrimToPrim $ do
+  let iotensor = unsafeCoerce tensor :: IOTensor a
+  size <- fmap (fromIntegral . product) $ shape iotensor
+  withDevicePtr iotensor $ \tptr -> do
+    rawLog tptr size
+
+inv :: forall m a . (PrimMonad m, TensorDataType a)
+    => MTensor (PrimState m) a -> m ()
+inv tensor = unsafePrimToPrim $ do
+  let iotensor = unsafeCoerce tensor :: IOTensor a
+  size <- fmap (fromIntegral . product) $ shape iotensor
+  withDevicePtr iotensor $ \tptr -> do
+    rawInv tptr size
+
+reshape shp (MTensor oldshp ptr) =
+  if product shp /= product oldshp
+  then error
+       $ "Incompatible shapes for reshaping: "
+       ++ show oldshp ++ ", " ++ show shp
+  else MTensor shp ptr

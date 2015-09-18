@@ -59,3 +59,16 @@ foreign import ccall unsafe "scale"
 
 foreign import ccall unsafe "scaleDouble"
   scaleDouble :: CDouble -> DevicePtr CDouble -> CSize -> IO ()
+
+foreign import ccall unsafe "logFloat"
+  logFloat :: DevicePtr CFloat -> CSize -> IO ()
+
+foreign import ccall unsafe "logDouble"
+  logDouble :: DevicePtr CDouble -> CSize -> IO ()
+
+foreign import ccall unsafe "inv"
+  inv :: DevicePtr CFloat -> CSize -> IO ()
+
+foreign import ccall unsafe "invDouble"
+  invDouble :: DevicePtr CDouble -> CSize -> IO ()
+
