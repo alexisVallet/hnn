@@ -22,3 +22,9 @@ main = do
     test_dropout
     test_linear
     test_sumCols
+    test_replicateAsCols
+    test_convolution
+    test_softmax
+    test_log
+    test_mlrCost
+    test_pooling2d

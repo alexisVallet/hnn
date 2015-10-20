@@ -1,106 +1,90 @@
-{-# LANGUAGE GADTs, ScopedTypeVariables, MultiParamTypeClasses, FlexibleInstances, FlexibleContexts, TypeFamilies #-}
+{-# LANGUAGE GADTs, ScopedTypeVariables, MultiParamTypeClasses, FlexibleInstances, FlexibleContexts, TypeFamilies, DataKinds, TypeOperators, DeriveGeneric #-}
 module HNN.NN where
 
 import Foreign.C
 import Prelude hiding (id, (.))
 import Control.Category
 import Data.VectorSpace
+import GHC.Generics
 
 import HNN.Tensor
 import qualified HNN.NN.Mutable as M
 
--- Type machinery to make it a Category instance.
-data Weights a = None
-               | NodeWeights [Tensor a]
-               | Comp (Weights a) (Weights a)
+-- Represents a computation from a to b that is differentiable with regards to a.
+-- The inner computation can take place in a monad, for instance for random number
+-- generation.
+newtype Diff m s a b = Diff (a -> m (b, b -> a))
 
-tensors :: Weights a -> [Tensor a]
-tensors None = []
-tensors (NodeWeights t) = t
-tensors (Comp l r) = tensors l ++ tensors r
+instance (Monad m) => Category (Diff m s) where
+  id = Diff $ \a -> return (a, \x -> x)
+  Diff fbc . Diff fab = Diff $ \a -> do
+    (b, bwdab) <- fab a
+    (c, bwdbc) <- fbc b
+    return (c, bwdab . bwdbc)
 
-class WeightsClass w a where
-  toWeights :: w -> Weights a
+infixr 3 ***
+infixr 3 &&&
+class (Category c) => NNCategory c where
+  (***) :: (VectorSpace a, VectorSpace a', Scalar a ~ Scalar a')
+        => c a b -> c a' b' -> c (a,a') (b,b')
+  (&&&) :: (VectorSpace a)
+        => c a b -> c a b' -> c a (b,b')
+  terminal :: (VectorSpace a) => b -> c a b
 
-instance WeightsClass () a where
-  toWeights () = None
+instance (Monad m) => NNCategory (Diff m s) where
+  Diff f1 *** Diff f2 = Diff $ \(i1,i2) -> do
+    (o1, bwd1) <- f1 i1
+    (o2, bwd2) <- f2 i2
+    return ((o1,o2), \(o1',o2') -> (bwd1 o1', bwd2 o2')) 
+  Diff f1 &&& Diff f2 = Diff $ \x -> do
+    (out1, bwd1) <- f1 x
+    (out2, bwd2) <- f2 x
+    return ((out1,out2), \(y1,y2) -> bwd1 y1 ^+^ bwd2 y2)
+  terminal x = fromFwdBwd constFwd constBwd
+    where constFwd _ = return x
+          constBwd _ _ = return $ const zeroV
 
-instance WeightsClass (Tensor a) a where
-  toWeights tensor = NodeWeights [tensor]
+class (Monad (DiffMonad f)) => Differentiable f where
+  type Input f :: *
+  type Output f :: *
+  type DiffMonad f :: * -> *
+  forwardBackward :: f -> Input f -> DiffMonad f (Output f, Output f -> Input f)
+  forward :: f -> Input f -> DiffMonad f (Output f)
+  forward df inp = do
+    (out, _) <- forwardBackward df inp
+    return out
+  backward :: f -> Input f -> Output f -> DiffMonad f (Input f)
+  backward df inp upgrad = do
+    (out, bwd) <- forwardBackward df inp
+    return $ bwd upgrad
 
-instance WeightsClass [Tensor a] a where
-  toWeights tensorlist = NodeWeights tensorlist
+infixr 2 -<
+(-<) :: (VectorSpace i1, VectorSpace i2, NNCategory c) => c (i1,i2) out -> i1 -> c i2 out
+nn -< inp = terminal inp &&& id >>> nn
 
-instance (WeightsClass w1 a, WeightsClass w2 a) => WeightsClass (w1, w2) a where
-  toWeights (w1, w2) = Comp (toWeights w1) (toWeights w2)
 
--- We fuse forward pass and backward pass into a single function
--- as an optimization to avoid unnecessary recomputation of forward
--- passes (if properly implemented). fromFwdBwd demonstrates the trick.
-newtype NN m a w inp out = NN {
-  -- Runs the forward pass (w -> inp -> m out), and additionally returns
-  -- the corresponding backward pass (out -> (w, inp)) to run on some
-  -- gradient from an upper layer, or just 1 in case this is the last
-  -- layer.
-  forwardBackward :: w -> inp -> m (out, out -> (w, inp))
-  }
-
-forward :: Monad m => NN m a w inp out -> w -> inp -> m out
-forward nn w inp = do
-  (out, _) <- forwardBackward nn w inp
-  return out
+instance (Monad m) => Differentiable (Diff m s a b) where
+  type Input (Diff m s a b) = a
+  type Output (Diff m s a b) = b
+  type DiffMonad (Diff m s a b) = m
+  forwardBackward (Diff f) = f
 
 -- Smart constructor from separate forward and backward pass
 -- computations. Ensures that forward pass results will not be
 -- recomputed needlessly during backward pass.
-fromFwdBwd :: (Monad m)
-           => (w -> inp -> m out) -- forward pass, takes weights and input and gives output
-           -> (w -> inp -> out -> m (out -> (w, inp))) -- backward pass, takes weights, inputs, output from forward pass, gradient from upper layer, and outputs gradients for weights and inputs.
-           -> NN m a w inp out
-fromFwdBwd fwd bwd = NN fwdbwd
-  where fwdbwd w inp = do
-          fwdres <- fwd w inp
-          bwdpure <- bwd w inp fwdres
-          return (fwdres, bwdpure)
+fromFwdBwd :: (Monad m, VectorSpace inp)
+           => (inp -> m out) -- forward pass, takes weights and input and gives output
+           -> (inp -> out -> m (out -> inp))
+           -> Diff m a inp out
+fromFwdBwd fwd bwd = Diff $ \inp -> do
+  fwdres <- fwd inp
+  bwdpure <- bwd inp fwdres
+  return (fwdres, bwdpure)
 
--- Composes forward passes keeping weights separate. This forms a category
--- structure, but cannot be made an instance of the standard Category type class
--- without discarding type information about the weights. It is obviously useful
--- to build regular feed-forward neural nets, but other categorical constructs
--- seem weird. Catamorphisms and Anamorphisms basically turn this into infinite
--- depth neural networks. Haven't found a way to make GHC deal with the types
--- yet, not sure it can deal with it at runtime either, but it's an intriguing
--- theoretical construct.
-(<+>) :: Monad m => NN m s w1 b c -> NN m s w2 a b -> NN m s (w1, w2) a c
-NN fwdbwdbc <+> NN fwdbwdab = NN fwdbwdac
-  where fwdbwdac (w1,w2) a = do
-          (fwdabres, bwdab) <- fwdbwdab w2 a
-          (fwdbcres, bwdbc) <- fwdbwdbc w1 fwdabres
-          return (fwdbcres, \cgrad -> let (w1grad, bgrad) = bwdbc cgrad
-                                          (w2grad, agrad) = bwdab bgrad in
-                                      ((w1grad, w2grad), agrad))
-
--- We require weights to form a vector space over the tensor scalar datatype.
--- This category instance requires weights to be shared between composed
--- layers. So they should have the same weight type, and individual tensors
--- making up this weight type should have the same shape.
--- This Category instance composes neural nets so they share weights - as
--- in the successive applications of the same layer in a recurrent network.
-instance (Monad m, VectorSpace w) => Category (NN m s w) where
-  id = fromFwdBwd idFwd idBwd
-    where idFwd _ inp = return inp
-          idBwd _ _ _ = return $ \upgrad -> (zeroV, upgrad)
-  NN fwdbwdbc . NN fwdbwdab = NN fwdbwdac
-    where fwdbwdac w a = do
-            (fwdabres, bwdab) <- fwdbwdab w a
-            (fwdbcres, bwdbc) <- fwdbwdbc w fwdabres
-            return (fwdbcres, \cgrad -> let (wgrad1, bgrad) = bwdbc cgrad
-                                            (wgrad2, agrad) = bwdab bgrad in
-                                        (wgrad1 ^+^ wgrad2, agrad))
-
--- For convenience, we define trivial vector spaces for layers which do
--- not have any weights. The parameter is for the corresponding scalar type.
+-- Vector spaces as heterogeneous lists of vector spaces. Just an heterogeneous
+-- list with the scalar type as a phantom type.
 data Trivial a = Zero
+               deriving (Generic, Show)
 
 instance AdditiveGroup (Trivial a) where
   zeroV = Zero
@@ -111,34 +95,73 @@ instance VectorSpace (Trivial a) where
   type Scalar (Trivial a) = a
   s *^ Zero = Zero
 
--- Functors, catamorphisms and anamorphisms in the
--- neural net categories.
-class NNFunctor f where
-  nnfmap :: (NN m a w inp out) -> (NN m a w (f inp) (f out))
+instance (AdditiveGroup a) => InnerSpace (Trivial a) where
+  Zero <.> Zero = zeroV
 
-type NNAlgebra m s w f a = NN m s w (f a) a
+-- A weight layer, as per common usage, has a distinguished set of weights.
+newtype Layer m a w inp out = Layer {
+  unLayer :: Diff m a (w,inp) out
+  }
 
-type NNCoAlgebra m s w f a = NN m s w a (f a)
+-- Category instance fits recurrent composition. (shared weights)
+instance (VectorSpace w, Monad m) => Category (Layer m a w) where
+  id = Layer $ Diff (\(w,x) -> return (x, \x' -> (zeroV, x')))
+  Layer (Diff fbc) . Layer (Diff fab) = Layer $ Diff $ \(w,a) -> do
+    (b, bwdab) <- fab (w,a)
+    (c, bwdbc) <- fbc (w,b)
+    return $ (c, \c' -> let (wgrad1,bgrad) = bwdbc c'
+                            (wgrad2,agrad) = bwdab bgrad in
+                        (wgrad1 ^+^ wgrad2, agrad))
 
-newtype Fix f = Iso { invIso :: f (Fix f) }
+instance (VectorSpace w, a ~ Scalar w, Monad m) => NNCategory (Layer m a w) where
+  Layer (Diff f1) *** Layer (Diff f2) = Layer $ Diff $ \(w,(a,a')) -> do
+    (b, bwd1) <- f1 (w,a)
+    (b', bwd2) <- f2 (w,a')
+    return ((b,b'), \(bgrad,bgrad') -> let (w1grad, agrad) = bwd1 bgrad
+                                           (w2grad, agrad') = bwd2 bgrad'
+                                       in (w1grad ^+^ w2grad, (agrad, agrad')))
+  Layer (Diff f1) &&& Layer (Diff f2) = Layer $  Diff $ \(w,a) -> do
+    (b,bwd1) <- f1 (w,a)
+    (b',bwd2) <- f2 (w,a)
+    return ((b,b'), \(bgrad,bgrad') -> let (w1grad, agrad1) = bwd1 bgrad
+                                           (w2grad, agrad2) = bwd2 bgrad'
+                                       in (w1grad ^+^ w2grad, agrad1 ^+^ agrad2))
+  terminal x = Layer $ Diff $ const $ return (x, \_ -> zeroV)
 
--- essentially the id function, just here to satisfy ghc.
-isoNN :: (Monad m, VectorSpace w) => NN m s w (f (Fix f)) (Fix f)
-isoNN = fromFwdBwd fwdiso bwdiso
-  where fwdiso _ = return . Iso
-        bwdiso _ _ _ = return $ \fixf -> (zeroV, invIso fixf) 
+instance (Monad m) => Differentiable (Layer m s w a b) where
+  type Input (Layer m s w a b) = (w,a)
+  type Output (Layer m s w a b) = b
+  type DiffMonad (Layer m s w a b) = m
+  forwardBackward (Layer df) = forwardBackward df
 
-invIsoNN :: (Monad m, VectorSpace w) => NN m s w (Fix f) (f (Fix f))
-invIsoNN = fromFwdBwd fwdinviso bwdinviso
-  where fwdinviso _ = return . invIso
-        bwdinviso _ _ _ = return $ \ffixf -> (zeroV, Iso ffixf)
+-- Ad-hoc combinator for feed-forward composition.
+infixr 2 <+<
+(<+<) :: (Monad m, VectorSpace w1, VectorSpace w2, s ~ Scalar w1, s ~ Scalar w2)
+      => Layer m s w1 b c -> Layer m s w2 a b -> Layer m s (w1, w2) a c
+Layer (Diff fbc) <+< Layer (Diff fab) = Layer $ Diff $ \((w1,w2),a) -> do
+  (b, bwdab) <- fab (w2,a)
+  (c, bwdbc) <- fbc (w1,b)
+  return (c, \c' -> let (w1grad, bgrad) = bwdbc c'
+                        (w2grad, agrad) = bwdab bgrad in
+                     ((w1grad,w2grad), agrad))
 
-cataNN :: (Monad m, NNFunctor f, VectorSpace w)
-       => NNAlgebra m s w f a
-       -> NN m s w (Fix f) a
-cataNN alg = alg . nnfmap (cataNN alg) . invIsoNN
+infixl 2 >+>
+(>+>) :: forall m w1 w2 n s a b c .
+         (Monad m, VectorSpace w1, VectorSpace w2, s ~ Scalar w1, s ~ Scalar w2)
+      => Layer m s w2 a b -> Layer m s w1 b c -> Layer m s (w1,w2) a c
+f >+> g = g <+< f
 
-anaNN :: (Monad m, NNFunctor f, VectorSpace w)
-      => NNCoAlgebra m s w f a
-      -> NN m s w a (Fix f)
-anaNN coalg = isoNN . nnfmap (anaNN coalg) . coalg
+-- Making a layer out of a differentiable function that does not depend on a set
+-- of weights.
+noWeights :: (Monad m, VectorSpace w, a ~ Scalar w)
+          => Diff m a inp out -> Layer m a w inp out
+noWeights (Diff f) = Layer $ Diff $ \(w,x) -> do
+  (y, bwd) <- f x
+  return (y, \y' -> (zeroV, bwd y'))
+
+-- Layer that runs an effectful computation on the input and passes it along
+-- untouched. Useful for debugging.
+effect :: (Monad m, VectorSpace w, s ~ Scalar w) => (a -> m b) -> Layer m s w a a
+effect f = noWeights $ Diff $ \x -> do
+  f x
+  return (x, \x' -> x')

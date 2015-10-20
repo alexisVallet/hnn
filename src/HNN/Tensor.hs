@@ -11,5 +11,8 @@ module HNN.Tensor (
   , toList
   , fromVector
   , toVector
+  , concatT
+  , module Data.VectorSpace
   ) where
+import Data.VectorSpace
 import HNN.Tensor.Internal

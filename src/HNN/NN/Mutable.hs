@@ -31,6 +31,7 @@ import qualified Foreign.CUDA.CuRAND as CuRAND
 import Control.Monad.Primitive
 import Unsafe.Coerce
 import System.IO.Unsafe
+import Control.Exception
 
 import HNN.Tensor.Mutable
 
@@ -43,18 +44,19 @@ handleError errMsg action = do
     ioError $ userError $ errStr ++ " (" ++ errMsg ++ ")"
 
 withDescriptor :: (Storable desc)
-               => (Ptr desc -> IO CuDNN.Status) -- creation fct
+               => String
+               -> (Ptr desc -> IO CuDNN.Status) -- creation fct
                -> (desc -> IO CuDNN.Status) -- set fct
                -> (desc -> IO CuDNN.Status) -- destroy fct
                -> (desc -> IO a) -- action to perform
                -> IO a
-withDescriptor create set destroy action = do
+withDescriptor name create set destroy action = do
   desc <- alloca $ \descptr -> do
-    handleError "Couldn't create descriptor." $ create descptr
+    handleError ("Couldn't create " ++ name ++ " descriptor.") $ create descptr
     peek descptr
-  handleError "Couldn't set descriptor." $ set desc
+  handleError ("Couldn't set " ++ name ++ " descriptor.") $ set desc
   x <- action desc
-  handleError "Couldn't destroy descriptor." $ destroy desc
+  handleError ("Couldn't destroy " ++ name ++ " descriptor.") $ destroy desc
   return x
 
 withTensor4d :: (TensorDataType a)
@@ -65,6 +67,7 @@ withTensor4d tensor action = do
   datatype <- dtype tensor
   [n,c,h,w] <- shape tensor >>= return . map fromIntegral
   withDescriptor
+    "tensor"
     CuDNN.createTensorDescriptor
     (\d -> CuDNN.setTensor4dDescriptor d CuDNN.nchw datatype n c h w)
     CuDNN.destroyTensorDescriptor $ \tensordesc -> withDevicePtr tensor $ \dvcptr -> do
@@ -79,6 +82,7 @@ withFilter4d tensor action = do
   datatype <- dtype tensor
   [n,c,h,w] <- shape tensor >>= return . map fromIntegral
   withDescriptor
+    "filter"
     CuDNN.createFilterDescriptor
     (\d -> CuDNN.setFilter4dDescriptor d datatype n c h w)
     CuDNN.destroyFilterDescriptor $ \filtdesc -> withDevicePtr tensor $ \dvcptr -> do
@@ -90,6 +94,7 @@ withConvDesc (padh,padw) (strh,strw) (uph,upw) = do
   let [cpadh,cpadw,cstrh,cstrw,cupw,cuph] =
         map fromIntegral [padh,padw,strh,strw,uph,upw]
   withDescriptor
+    "convolution"
     CuDNN.createConvolutionDescriptor
     (\d -> CuDNN.setConvolution2dDescriptor d cpadh cpadw cstrh cstrw cupw cuph CuDNN.convolution)
     CuDNN.destroyConvolutionDescriptor
@@ -139,37 +144,39 @@ convolution2dFwdIO
   filterdims <- nbdims filters
   when (fmapdims /= 4 || filterdims /= 4) shapeError
   -- make the descriptors
-  withConvDesc padding stride upscale $ \convdesc -> do
-    withTensor4d fmaps $ \inputdesc inputptr -> do
-      withFilter4d filters $ \filtersdesc filtersptr -> do
-        -- computing output shape
-        [outn,outc,outh,outw] <-
-          withMany (const alloca) "bite" $ \[outnp,outcp,outhp,outwp] -> do
-            handleError "Couldn't get convolution output shape." $
-              CuDNN.getConvolution2dForwardOutputDim
-                convdesc inputdesc filtersdesc outnp outcp outhp outwp
-            forM [outnp,outcp,outhp,outwp] $ \ptr -> do
-              val <- peek ptr
-              return $ fromIntegral val
-        output <- emptyTensor [outn,outc,outh,outw]
-        withTensor4d output $ \outputdesc outputptr -> do
-          -- allocate workspace
-          workspacesize <- alloca $ \wkspcsizeptr -> do
-            handleError "Couldn't compute workspace size." $
-              CuDNN.getConvolutionForwardWorkspaceSize
-              handle inputdesc filtersdesc convdesc outputdesc algo
-              wkspcsizeptr
-            peek wkspcsizeptr
-          CUDA.allocaArray (fromIntegral workspacesize) $ \workspace -> do
-            -- allocate alpha and beta
-            withArray [1] $ \alpha -> withArray [0] $ \beta -> do
-              -- finally run the damn thing
-              handleError "Couldn't compute convolution." $
-                CuDNN.convolutionForward
-                handle alpha inputdesc inputptr filtersdesc filtersptr
-                convdesc algo workspace workspacesize beta outputdesc
-                outputptr
-        return output
+  let runConv = withConvDesc padding stride upscale $ \convdesc -> do
+        withTensor4d fmaps $ \inputdesc inputptr -> do
+          withFilter4d filters $ \filtersdesc filtersptr -> do
+            -- computing output shape
+            [outn,outc,outh,outw] <-
+              withMany (const alloca) "bite" $ \[outnp,outcp,outhp,outwp] -> do
+                handleError "Couldn't get convolution output shape." $
+                  CuDNN.getConvolution2dForwardOutputDim
+                  convdesc inputdesc filtersdesc outnp outcp outhp outwp
+                forM [outnp,outcp,outhp,outwp] $ \ptr -> do
+                  val <- peek ptr
+                  return $ fromIntegral val
+            output <- emptyTensor [outn,outc,outh,outw]
+            withTensor4d output $ \outputdesc outputptr -> do
+              -- allocate workspace
+              workspacesize <- alloca $ \wkspcsizeptr -> do
+                handleError "Couldn't compute workspace size." $
+                  CuDNN.getConvolutionForwardWorkspaceSize
+                  handle inputdesc filtersdesc convdesc outputdesc algo
+                  wkspcsizeptr
+                peek wkspcsizeptr
+              CUDA.allocaArray (fromIntegral workspacesize) $ \workspace -> do
+                -- allocate alpha and beta
+                withArray [1] $ \alpha -> withArray [0] $ \beta -> do
+                  -- finally run the damn thing
+                  handleError "Couldn't compute convolution." $
+                    CuDNN.convolutionForward
+                    handle alpha inputdesc inputptr filtersdesc filtersptr
+                    convdesc algo workspace workspacesize beta outputdesc
+                    outputptr
+            return output
+  runConv `catch` \e -> do
+    error $ "Exception thrown in convolution forward pass: " ++ show (e :: SomeException) ++ "\n filter shape: " ++ show filtershape ++ ", image shape: " ++ show fmapshape
 
 convolution2dBwdFilters :: forall m a . (PrimMonad m, TensorDataType a)
                          => CuDNN.Handle
@@ -197,18 +204,19 @@ convolution2dBwdFiltersIO :: forall a . (TensorDataType a)
                           -> IO (IOTensor a) -- gradients with regards to the filters
 convolution2dBwdFiltersIO handle padding stride upscale fmaps filters upgrad = do
   -- make the descriptors
-  withConvDesc padding stride upscale $ \convdesc -> do
-    withTensor4d fmaps $ \inputdesc inputptr -> do
-      withTensor4d upgrad $ \upgraddesc upgradptr -> do
-        withArray [1] $ \alpha -> withArray [0] $ \beta -> do
-          -- compute gradient with regards to the filters
-          filtersgrad <- shape filters >>= emptyTensor
-          withFilter4d filtersgrad $ \filtersgraddesc filtersgradptr ->
-            handleError
-            "Couldn't compute convolution gradient with respect to filters." $
-            CuDNN.convolutionBackwardFilter handle alpha inputdesc inputptr
-            upgraddesc upgradptr convdesc beta filtersgraddesc filtersgradptr
-          return filtersgrad
+  let runConv = withConvDesc padding stride upscale $ \convdesc -> do
+        withTensor4d fmaps $ \inputdesc inputptr -> do
+          withTensor4d upgrad $ \upgraddesc upgradptr -> do
+            withArray [1] $ \alpha -> withArray [0] $ \beta -> do
+              -- compute gradient with regards to the filters
+              filtersgrad <- shape filters >>= emptyTensor
+              withFilter4d filtersgrad $ \filtersgraddesc filtersgradptr ->
+                handleError
+                "Couldn't compute convolution gradient with respect to filters." $
+                CuDNN.convolutionBackwardFilter handle alpha inputdesc inputptr
+                upgraddesc upgradptr convdesc beta filtersgraddesc filtersgradptr
+              return filtersgrad
+  runConv `catch` \e -> error $ "Exception thrown in convolution backward pass with regards to filters: " ++ show (e :: IOException)
 
 convolution2dBwdInputs :: forall m a . (PrimMonad m, TensorDataType a)
                        => CuDNN.Handle
@@ -236,19 +244,19 @@ convolution2dBwdInputsIO :: forall a . (TensorDataType a)
                          -> IO (IOTensor a) -- gradients with regards to the inputs
 convolution2dBwdInputsIO handle padding stride upscale fmaps filters upgrad = do
   -- make the descriptors
-  withConvDesc padding stride upscale $ \convdesc -> do
-    withFilter4d filters $ \filtersdesc filtersptr -> do
-      withTensor4d upgrad $ \upgraddesc upgradptr -> do
-        withArray [1] $ \alpha -> withArray [0] $ \beta -> do
-          -- compute gradient with regards to the input feature maps
-          inputsgrad <- shape fmaps >>= emptyTensor
-          withTensor4d inputsgrad $ \inputsgraddesc inputsgradptr ->
-            handleError
-            "Couldn't compute convolution gradient with respect to the inputs." $
-            CuDNN.convolutionBackwardData handle alpha filtersdesc filtersptr
-            upgraddesc upgradptr convdesc beta inputsgraddesc inputsgradptr
-          return inputsgrad
-
+  let runConv = withConvDesc padding stride upscale $ \convdesc -> do
+        withFilter4d filters $ \filtersdesc filtersptr -> do
+          withTensor4d upgrad $ \upgraddesc upgradptr -> do
+            withArray [1] $ \alpha -> withArray [0] $ \beta -> do
+              -- compute gradient with regards to the input feature maps
+              inputsgrad <- shape fmaps >>= emptyTensor
+              withTensor4d inputsgrad $ \inputsgraddesc inputsgradptr ->
+                handleError
+                "Couldn't compute convolution gradient with respect to the inputs." $
+                CuDNN.convolutionBackwardData handle alpha filtersdesc filtersptr
+                upgraddesc upgradptr convdesc beta inputsgraddesc inputsgradptr
+              return inputsgrad
+  runConv `catch` \e -> error $ "Exception thrown in convolution backward pass with regards to data: " ++ show (e :: IOException)
 -- activations
 activationFwd :: forall m a . (PrimMonad m, TensorDataType a)
               => CuDNN.Handle
@@ -363,6 +371,7 @@ pooling2dFwdIO handle mode (wh,ww) (padh,padw) (strh,strw) input = do
   let [cwh,cww,cpadh,cpadw,cstrh,cstrw] =
         map fromIntegral [wh,ww,padh,padw,strh,strw]
   withDescriptor
+    "pooling"
     CuDNN.createPoolingDescriptor
     (\d -> CuDNN.setPooling2dDescriptor d mode cwh cww cpadh cpadw cstrh cstrw)
     CuDNN.destroyPoolingDescriptor $ \pooldesc -> do
@@ -395,6 +404,7 @@ pooling2dBwdIO handle mode (wh,ww) (padh,padw) (strh,strw) inp out upgrad = do
   let [cwh,cww,cpadh,cpadw,cstrh,cstrw] =
         map fromIntegral [wh,ww,padh,padw,strh,strw]
   withDescriptor
+    "pooling"
     CuDNN.createPoolingDescriptor
     (\d -> CuDNN.setPooling2dDescriptor d mode cwh cww cpadh cpadw cstrh cstrw)
     CuDNN.destroyPoolingDescriptor $ \pooldesc -> do
@@ -405,8 +415,8 @@ pooling2dBwdIO handle mode (wh,ww) (padh,padw) (strh,strw) inp out upgrad = do
             withTensor4d grad $ \graddesc gradptr -> do
               withArray [1] $ \alpha -> withArray [0] $ \beta -> do
                 handleError "Couldn't compute backward pooling." $
-                  CuDNN.poolingBackward handle pooldesc alpha inpdesc inpptr
-                  upgraddesc upgradptr outdesc outptr beta graddesc gradptr
+                  CuDNN.poolingBackward handle pooldesc alpha outdesc outptr
+                  upgraddesc upgradptr inpdesc inpptr beta graddesc gradptr
                 return grad
 
 -- Softmax

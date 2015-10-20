@@ -10,65 +10,70 @@ import Foreign.CUDA.Types
 
 #include <hnn_cubits.h>
 
-foreign import ccall unsafe "thresh"
+foreign import ccall  "thresh"
   thresh :: DevicePtr CFloat -> CSize -> CFloat -> DevicePtr CFloat
          -> IO ()
 
-foreign import ccall unsafe "threshDouble"
+foreign import ccall  "threshDouble"
   threshDouble :: DevicePtr CDouble -> CSize -> CDouble
                -> DevicePtr CDouble -> IO ()
 
-foreign import ccall unsafe "mul"
+foreign import ccall  "mul"
   mul :: DevicePtr CFloat -> DevicePtr CFloat -> CSize -> IO ()
 
-foreign import ccall unsafe "mulDouble"
+foreign import ccall  "mulDouble"
   mulDouble :: DevicePtr CDouble -> DevicePtr CDouble -> CSize -> IO ()
 
-foreign import ccall unsafe "add"
+foreign import ccall  "add"
   add :: DevicePtr CFloat -> DevicePtr CFloat -> CSize -> IO ()
 
-foreign import ccall unsafe "addDouble"
+foreign import ccall  "addDouble"
   addDouble :: DevicePtr CDouble -> DevicePtr CDouble -> CSize -> IO ()
 
-foreign import ccall unsafe "tabs"
+foreign import ccall  "tabs"
   tabs :: DevicePtr CFloat -> CSize -> IO ()
 
-foreign import ccall unsafe "tabsDouble"
+foreign import ccall  "tabsDouble"
   tabsDouble :: DevicePtr CDouble -> CSize -> IO ()
 
-foreign import ccall unsafe "signum"
+foreign import ccall  "signum"
   tsignum :: DevicePtr CFloat -> CSize -> IO ()
 
-foreign import ccall unsafe "signumDouble"
+foreign import ccall  "signumDouble"
   tsignumDouble :: DevicePtr CDouble -> CSize -> IO ()
 
-foreign import ccall unsafe "subtract"
+foreign import ccall  "subtract"
   subtract :: DevicePtr CFloat -> DevicePtr CFloat -> CSize -> IO ()
 
-foreign import ccall unsafe "subtractDouble"
+foreign import ccall  "subtractDouble"
   subtractDouble :: DevicePtr CDouble -> DevicePtr CDouble -> CSize -> IO ()
 
-foreign import ccall unsafe "negate"
+foreign import ccall  "negate"
   tnegate :: DevicePtr CFloat -> CSize -> IO ()
 
-foreign import ccall unsafe "negateDouble"
+foreign import ccall  "negateDouble"
   tnegateDouble :: DevicePtr CDouble -> CSize -> IO ()
 
-foreign import ccall unsafe "scale"
+foreign import ccall  "scale"
   scale :: CFloat -> DevicePtr CFloat -> CSize -> IO ()
 
-foreign import ccall unsafe "scaleDouble"
+foreign import ccall  "scaleDouble"
   scaleDouble :: CDouble -> DevicePtr CDouble -> CSize -> IO ()
 
-foreign import ccall unsafe "logFloat"
+foreign import ccall  "logFloat"
   logFloat :: DevicePtr CFloat -> CSize -> IO ()
 
-foreign import ccall unsafe "logDouble"
+foreign import ccall  "logDouble"
   logDouble :: DevicePtr CDouble -> CSize -> IO ()
 
-foreign import ccall unsafe "inv"
+foreign import ccall  "inv"
   inv :: DevicePtr CFloat -> CSize -> IO ()
 
-foreign import ccall unsafe "invDouble"
+foreign import ccall  "invDouble"
   invDouble :: DevicePtr CDouble -> CSize -> IO ()
 
+foreign import ccall "texp"
+  texp :: DevicePtr CFloat -> CSize -> IO ()
+
+foreign import ccall "texpDouble"
+  texpDouble :: DevicePtr CDouble -> CSize -> IO ()

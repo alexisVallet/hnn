@@ -1,4 +1,4 @@
-{-# LANGUAGE GADTs, ForeignFunctionInterface, ScopedTypeVariables, TypeFamilies #-}
+{-# LANGUAGE GADTs, ForeignFunctionInterface, ScopedTypeVariables, TypeFamilies, DeriveGeneric, UndecidableInstances #-}
 module HNN.Tensor.Internal (
   Tensor(..)
   , MT.TensorDataType
@@ -12,25 +12,41 @@ module HNN.Tensor.Internal (
   , toList
   , fromVector
   , toVector
+  , concatT
+  , module Data.VectorSpace
   ) where
 import Foreign
 import Data.Proxy
 import Control.Monad.Primitive
 import System.IO.Unsafe
 import Data.VectorSpace
+import Data.AdditiveGroup
 import qualified Data.Vector.Storable as SV
 import qualified Data.Vector.Storable.Mutable as SMV
+import Data.Traversable
+import GHC.Generics
+import Data.Serialize
 
 import qualified HNN.Tensor.Mutable.Internal as MT
 import qualified Foreign.CUDA as CUDA
 import qualified Foreign.CUDA.CuDNN as CuDNN
 import qualified Foreign.CUDA.Cublas as CuBlas
 
-data Tensor a where
-  Tensor :: (MT.TensorDataType a)
-         => [Int]
-         -> ForeignPtr a
-         -> Tensor a
+data Tensor a = Tensor [Int] (ForeignPtr a)
+
+data STensor a = STensor [Int] [a]
+               deriving Generic
+
+instance (Generic a, MT.TensorDataType a) => Generic (Tensor a) where
+  type Rep (Tensor a) = Rep (STensor a)
+  from t = from (STensor (shape t) (toList t))
+  to rep = let STensor shape listData = to rep in
+            fromList shape listData
+
+instance (Serialize a, Generic a, MT.TensorDataType a) => Serialize (Tensor a)
+
+instance (MT.TensorDataType a, Show a) => Show (Tensor a) where
+  show t = "Tensor " ++ show (shape t) ++ " "  ++ show (take 10 $ toList t)
 
 shape :: Tensor a -> [Int]
 shape (Tensor shp _) = shp
@@ -86,6 +102,12 @@ checkShape t1 t2 x =
   if (shape t1 /= shape t2)
   then error $ "Incompatible shape for elementwise operation: " ++ show (shape t1) ++ ", " ++ show (shape t2)
   else x
+
+-- flattens and concatenates a list of vectors.
+concatT :: (MT.TensorDataType a) => [Tensor a] -> Tensor a
+concatT ts =
+  fromList [sum $ fmap (product . shape) ts]
+  $ concat $ fmap toList ts
 
 -- broadcasting (only from scalars for now)
 -- Very ugly CPU solution.
@@ -161,3 +183,6 @@ instance (MT.TensorDataType a) => VectorSpace (Tensor a) where
     MT.withDevicePtr res $ \resptr -> do
       MT.rawScale x resptr size
     unsafeFreeze res
+
+instance (MT.TensorDataType a) => InnerSpace (Tensor a) where
+  t1 <.> t2 = foldr (+) 0 $ fmap (\(x1,x2) -> x1 * x2) $ zip (toList t1) (toList t2)

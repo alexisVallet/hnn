@@ -41,7 +41,7 @@ test_pooling2dFwd handle = describe "HNN.NN.Mutable.pooling2dFwd" $ do
       (mpresult,mpshape) = runST $ do
         fmap_tensor <- fromList [1,1,4,4] fmap
         mp_tensor <- pooling2dFwd handle CuDNN.pooling_max
-                     (3,3) (1,1) (2,2) fmap_tensor
+                     (2,2) (0,0) (2,2) fmap_tensor
         coeffs <- toList mp_tensor
         res_shape <- shape mp_tensor
         return (coeffs,res_shape)

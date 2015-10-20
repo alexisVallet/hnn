@@ -22,8 +22,13 @@ library
                      , HNN.Layers
                      , HNN.Internal.Cubits
                      , HNN.Data
+                     , HNN.Optimize
+                     , HNN.Optimize.Vanilla
+                     , HNN.Optimize.Momentum
+                     , HNN.Init
   other-modules:       HNN.Tensor.Internal
                      , HNN.Tensor.Mutable.Internal
+                     , HNN.Layers.Internal
   build-depends:       base >= 4.7 && < 5
                      , cuda >= 0.6.5 && < 0.7
                      , hcudnn >= 0.1 && < 0.2
@@ -40,8 +45,12 @@ library
                      , filepath >= 1.3 && < 1.4
                      , vector >= 0.10 && < 0.11
                      , MonadRandom >= 0.3 && < 0.4
+                     , mmorph >= 1.0 && < 1.1
+                     , cereal >= 0.4 && < 0.5
+                     , bytestring >= 0.10 && < 0.11
   default-language:    Haskell2010
   Extra-libraries:     hnn_cubits
+  ghc-options:         -threaded -rtsopts -with-rtsopts=-N
 
 test-suite hnn-test
   type:                exitcode-stdio-1.0
@@ -50,6 +59,7 @@ test-suite hnn-test
   other-modules:       Test.HNN.NN.Mutable
                      , Test.HNN.Layers
                      , Test.HNN.NN.NumericGrad
+                     , Test.HNN.ArbitraryInstances
   build-depends:       base >= 4.7 && < 5
                      , hnn >= 0.1 && < 0.2
                      , hcudnn >= 0.1 && < 0.2
@@ -59,6 +69,7 @@ test-suite hnn-test
                      , QuickCheck >= 2.5.1
                      , cublas >= 0.2.1 && < 0.3
                      , vector-space >= 0.9 && < 0.11
+                     , mtl >= 2.1 && < 2.3
   ghc-options:         -threaded -rtsopts -with-rtsopts=-N
   default-language:    Haskell2010
 

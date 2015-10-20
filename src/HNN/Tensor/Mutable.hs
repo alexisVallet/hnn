@@ -14,6 +14,7 @@ module HNN.Tensor.Mutable (
   , copy
   , threshInplace
   , tlog
+  , texp  
   , inv
   , reshape
   ) where

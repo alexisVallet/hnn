@@ -1,7 +1,7 @@
-{-# LANGUAGE GADTs, ScopedTypeVariables #-}
+{-# LANGUAGE GADTs, ScopedTypeVariables, TypeFamilies, UndecidableInstances #-}
 module HNN.Tensor.Mutable.Internal (
   MTensor(..)
-  , IOTensor
+  , IOTensor(..)
   , TensorDataType(..)
   , nbdims
   , dtype
@@ -14,6 +14,7 @@ module HNN.Tensor.Mutable.Internal (
   , copy
   , threshInplace
   , tlog
+  , texp
   , inv
   , reshape
   ) where
@@ -32,10 +33,27 @@ import System.IO.Error
 import Control.Monad
 import Control.Monad.Primitive
 import Unsafe.Coerce
+import Data.VectorSpace
+import GHC.Generics
+import Data.Serialize
 
 import qualified HNN.Internal.Cubits as Cubits
 
-class (Cublas.Cublas a, Num a, Storable a) => TensorDataType a where
+instance Generic CFloat where
+  type Rep CFloat = Rep Float
+  from cx = from (realToFrac cx :: Float)
+  to rep = realToFrac (to rep :: Float)
+
+instance Generic CDouble where
+  type Rep CDouble = Rep Double
+  from cx = from (realToFrac cx :: Double)
+  to rep = realToFrac (to rep :: Double)
+
+instance Serialize CFloat
+instance Serialize CDouble
+
+class (Cublas.Cublas a, Floating a, Storable a, VectorSpace a, a ~ Scalar a, Serialize a)
+      => TensorDataType a where
   datatype :: Proxy a -> CuDNN.DataType
   -- ad-hoc stuff to cleanly wrap low-level C APIs
   thresh :: CUDA.DevicePtr a -> CSize -> a -> CUDA.DevicePtr a -> IO ()
@@ -48,11 +66,24 @@ class (Cublas.Cublas a, Num a, Storable a) => TensorDataType a where
   rawScale :: a -> CUDA.DevicePtr a -> CSize -> IO ()
   rawLog :: CUDA.DevicePtr a -> CSize -> IO ()
   rawInv :: CUDA.DevicePtr a -> CSize -> IO ()
+  rawExp :: CUDA.DevicePtr a -> CSize -> IO ()
   -- curand stuff
   generateUniform :: CuRAND.Generator
                   -> CUDA.DevicePtr a
                   -> CSize
                   -> IO CuRAND.Status
+  generateNormal :: CuRAND.Generator
+                 -> CUDA.DevicePtr a
+                 -> CSize
+                 -> a
+                 -> a
+                 -> IO CuRAND.Status
+  generateLogNormal :: CuRAND.Generator
+                    -> CUDA.DevicePtr a
+                    -> CSize
+                    -> a
+                    -> a
+                    -> IO CuRAND.Status
 
 instance TensorDataType CFloat where
   datatype = const CuDNN.float
@@ -66,7 +97,10 @@ instance TensorDataType CFloat where
   rawScale = Cubits.scale
   rawLog = Cubits.logFloat
   rawInv = Cubits.inv
+  rawExp = Cubits.texp
   generateUniform = CuRAND.generateUniform
+  generateNormal = CuRAND.generateNormal
+  generateLogNormal = CuRAND.generateLogNormal
 
 instance TensorDataType CDouble where
   datatype = const CuDNN.double
@@ -80,14 +114,13 @@ instance TensorDataType CDouble where
   rawScale = Cubits.scaleDouble
   rawLog = Cubits.logDouble
   rawInv = Cubits.invDouble
+  rawExp = Cubits.texpDouble
   generateUniform = CuRAND.generateUniformDouble
+  generateNormal = CuRAND.generateNormalDouble
+  generateLogNormal = CuRAND.generateLogNormalDouble
 
 -- mutable tensor
-data MTensor s a where
-  MTensor :: (TensorDataType a)
-          => [Int] -- shape
-          -> ForeignPtr a -- data
-          -> MTensor s a
+data MTensor s a = MTensor [Int] (ForeignPtr a)
 
 type IOTensor = MTensor RealWorld
 
@@ -195,6 +228,14 @@ tlog tensor = unsafePrimToPrim $ do
   withDevicePtr iotensor $ \tptr -> do
     rawLog tptr size
 
+texp :: forall m a . (PrimMonad m, TensorDataType a)
+     => MTensor (PrimState m) a -> m ()
+texp t = unsafePrimToPrim $ do
+  let iot = unsafeCoerce t :: IOTensor a
+  size <- fmap (fromIntegral . product) $ shape iot
+  withDevicePtr iot $ \tptr -> do
+    rawExp tptr size
+
 inv :: forall m a . (PrimMonad m, TensorDataType a)
     => MTensor (PrimState m) a -> m ()
 inv tensor = unsafePrimToPrim $ do
@@ -203,6 +244,7 @@ inv tensor = unsafePrimToPrim $ do
   withDevicePtr iotensor $ \tptr -> do
     rawInv tptr size
 
+reshape :: [Int] -> MTensor s a -> MTensor s a
 reshape shp (MTensor oldshp ptr) =
   if product shp /= product oldshp
   then error
