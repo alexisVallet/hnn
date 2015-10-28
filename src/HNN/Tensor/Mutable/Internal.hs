@@ -36,6 +36,7 @@ import Unsafe.Coerce
 import Data.VectorSpace
 import GHC.Generics
 import Data.Serialize
+import Control.DeepSeq
 
 import qualified HNN.Internal.Cubits as Cubits
 
@@ -51,8 +52,11 @@ instance Generic CDouble where
 
 instance Serialize CFloat
 instance Serialize CDouble
+instance NFData CFloat
+instance NFData CDouble
 
-class (Cublas.Cublas a, Floating a, Storable a, VectorSpace a, a ~ Scalar a, Serialize a)
+class (Cublas.Cublas a, Floating a, Storable a, VectorSpace a, a ~ Scalar a, Serialize a,
+       NFData a)
       => TensorDataType a where
   datatype :: Proxy a -> CuDNN.DataType
   -- ad-hoc stuff to cleanly wrap low-level C APIs

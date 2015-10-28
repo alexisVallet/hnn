@@ -26,6 +26,7 @@ import qualified Data.Vector.Storable.Mutable as SMV
 import Data.Traversable
 import GHC.Generics
 import Data.Serialize
+import Control.DeepSeq
 
 import qualified HNN.Tensor.Mutable.Internal as MT
 import qualified Foreign.CUDA as CUDA
@@ -44,6 +45,8 @@ instance (Generic a, MT.TensorDataType a) => Generic (Tensor a) where
             fromList shape listData
 
 instance (Serialize a, Generic a, MT.TensorDataType a) => Serialize (Tensor a)
+
+instance (NFData a, Generic a, MT.TensorDataType a) => NFData (Tensor a)
 
 instance (MT.TensorDataType a, Show a) => Show (Tensor a) where
   show t = "Tensor " ++ show (shape t) ++ " "  ++ show (take 10 $ toList t)

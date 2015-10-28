@@ -86,7 +86,8 @@ main = do
     let init_weights = (fc_w, (conv_w4, (conv_w3, (conv_w2, conv_w1))))
     runEffect $
       randomize (fmap (\(i,l) -> (i, [l])) mnist_train) return
-      >-> batch_images_labels grey_to_float 10 batch_size
+      >-> batch_images grey_to_float 10 batch_size
+      >-> batch_to_gpu
       >-> runMomentum 0.01 0.9 (sgd momentum cost_grad init_weights)
       >-> runEvery 10 (\(c,w) -> do
                           liftIO $ putStrLn "saving..."

@@ -1,5 +1,19 @@
 {-# LANGUAGE GADTs, ScopedTypeVariables, MultiParamTypeClasses, FlexibleInstances, FlexibleContexts, TypeFamilies, DataKinds, TypeOperators, DeriveGeneric #-}
-module HNN.NN where
+module HNN.NN (
+    module Control.Category
+  , module Data.VectorSpace
+  , Diff(..)
+  , NNCategory(..)
+  , Differentiable(..)
+  , (-<)
+  , fromFwdBwd
+  , Trivial(..)
+  , Layer(..)
+  , (<+<)
+  , (>+>)
+  , noWeights
+  , effect
+  ) where
 
 import Foreign.C
 import Prelude hiding (id, (.))
