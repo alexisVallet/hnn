@@ -36,6 +36,9 @@ module HNN.Layers.Internal (
   , llog
   , lexp
   , inv
+  , HNN.Layers.Internal.transformTensor
+  , CuDNN.nchw
+  , CuDNN.nhwc
   ) where
 import Prelude hiding ((.), id)
 import Foreign.C
@@ -399,3 +402,24 @@ mlrCost n c =
   >>> sumCols
   >>> scale -< (-1 / fromIntegral n)
   >>> toScalar
+
+transformTensor :: (TensorDataType a, VectorSpace w, a ~ Scalar w)
+                => CuDNN.TensorFormat
+                -> CuDNN.TensorFormat
+                -> Layer GPU a w (Tensor a) (Tensor a)
+transformTensor srcf dstf = noWeights $ fromFwdBwd fwdTrans bwdTrans
+  where fwdTrans srct = do
+          handle <- view cudnnHandle
+          return $ runST $ do
+            msrct <- unsafeThaw srct
+            mdstt <- HNN.NN.Mutable.transformTensor handle srcf dstf msrct
+            unsafeFreeze mdstt
+        bwdTrans _ _ = do
+          handle <- view cudnnHandle
+          return $ \dstt' -> runST $ do
+            mdstt' <- unsafeThaw dstt'
+            msrct' <- HNN.NN.Mutable.transformTensor handle dstf srcf mdstt'
+            unsafeFreeze msrct'
+
+            
+  

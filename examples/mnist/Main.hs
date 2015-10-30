@@ -12,6 +12,7 @@ import Control.Monad
 import Data.VectorSpace
 import Data.List
 import System.Mem
+import qualified Data.Vector.Storable as V
 
 import HNN as HNN
 
@@ -67,7 +68,7 @@ main = do
             >>> lreshape [batch_size,10,1,1]
             >>> activation activation_relu
           nnet =
-            convLayer
+            (transformTensor nhwc nchw >>> convLayer)
             >+> convLayer
             >+> convLayer
             >+> convLayer
@@ -86,7 +87,9 @@ main = do
     let init_weights = (fc_w, (conv_w4, (conv_w3, (conv_w2, conv_w1))))
     runEffect $
       randomize (fmap (\(i,l) -> (i, [l])) mnist_train) return
-      >-> batch_images grey_to_float 10 batch_size
+      >-> batch_images 10 batch_size
+      >-> P.map (\(b,bs,l,ls) -> (V.map (\p -> (fromIntegral p - 128) / 255 :: CFloat) b,
+                                  bs,l,ls))
       >-> batch_to_gpu
       >-> runMomentum 0.01 0.9 (sgd momentum cost_grad init_weights)
       >-> runEvery 10 (\(c,w) -> do

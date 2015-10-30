@@ -28,3 +28,4 @@ main = do
     test_log
     test_mlrCost
     test_pooling2d
+    test_transformTensor

@@ -16,6 +16,7 @@ module HNN.NN.Mutable (
   , gemmBwdC
   , createGenerator
   , dropoutMaskIO
+  , transformTensor
   , mul
   ) where
 
@@ -72,8 +73,7 @@ withTensor4d tensor action = do
     (\d -> CuDNN.setTensor4dDescriptor d CuDNN.nchw datatype n c h w)
     CuDNN.destroyTensorDescriptor $ \tensordesc -> withDevicePtr tensor $ \dvcptr -> do
       action tensordesc dvcptr
-      
-
+                
 withFilter4d :: (TensorDataType a)
              => IOTensor a
              -> (CuDNN.FilterDescriptor -> CUDA.DevicePtr a -> IO b)
@@ -660,3 +660,49 @@ mulIO t1 t2 = do
   withDevicePtr t1 $ \t1ptr ->
     withDevicePtr t2 $ \t2ptr -> do
       rawMul t1ptr t2ptr size
+
+transformTensorIO :: TensorDataType a
+                  => CuDNN.Handle
+                  -> CuDNN.TensorFormat
+                  -> CuDNN.TensorFormat
+                  -> IOTensor a
+                  -> IO (IOTensor a)
+transformTensorIO handle srcf dstf src = do
+  datatype <- dtype src
+  [n,c,h,w] <- shape src
+               >>= \[a,b,c,d] -> return $
+                                 if srcf == CuDNN.nchw then [a,b,c,d]
+                                 else if srcf == CuDNN.nhwc then [a,d,b,c]
+                                      else error $ "Unsupported input format: " ++ show srcf
+  let [cn,cc,ch,cw] = fmap fromIntegral [n,c,h,w]
+  withDescriptor
+    "tensor"
+    CuDNN.createTensorDescriptor
+    (\d -> CuDNN.setTensor4dDescriptor d srcf datatype cn cc ch cw)
+    CuDNN.destroyTensorDescriptor $ \srcdesc -> do
+      withDescriptor
+        "tensor"
+        CuDNN.createTensorDescriptor
+        (\d -> CuDNN.setTensor4dDescriptor d dstf datatype cn cc ch cw)
+        CuDNN.destroyTensorDescriptor $ \dstdesc -> do
+          dst <- emptyTensor $ if dstf == CuDNN.nchw then [n,c,h,w]
+                               else if dstf == CuDNN.nhwc then [n,h,w,c]
+                                    else error $ "Unsupported output format: " ++ show dstf
+          withDevicePtr src $ \srcptr -> do
+            withDevicePtr dst $ \dstptr -> do
+              withArray [1] $ \alpha -> withArray [0] $ \beta -> do
+                handleError "Couldn't transform the tensor." $
+                  CuDNN.transformTensor handle alpha srcdesc srcptr beta
+                  dstdesc dstptr
+                return dst
+
+transformTensor :: forall a m . (TensorDataType a, PrimMonad m)
+                => CuDNN.Handle
+                -> CuDNN.TensorFormat
+                -> CuDNN.TensorFormat
+                -> MTensor (PrimState m) a
+                -> m (MTensor (PrimState m) a)
+transformTensor handle srcf dstf src = do
+  ioout <- unsafePrimToPrim
+           $ transformTensorIO  handle srcf dstf (unsafeCoerce src :: IOTensor a)
+  return $ unsafeCoerce ioout

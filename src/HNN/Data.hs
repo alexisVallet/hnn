@@ -36,6 +36,7 @@ import Data.Proxy
 import qualified Data.Time as Time
 import Data.IORef
 import Control.DeepSeq
+import Foreign.ForeignPtr
 
 import HNN.Tensor as T
 
@@ -102,35 +103,49 @@ randomize xs f = do
 --   where Z :. h :. w = Friday.shape img
 --         c = nChannels img
 
-img_to_chw :: (Storable a, Image i, Pixel (ImagePixel i))
-           => (PixelChannel (ImagePixel i) -> a) -> i -> V.Vector a
-img_to_chw conv img = runST $ do
-  let Z :. h :. w = Friday.shape img
+-- img_to_chw :: (Storable a, Image i, Pixel (ImagePixel i))
+--            => (PixelChannel (ImagePixel i) -> a) -> i -> V.Vector a
+-- img_to_chw conv img = runST $ do
+--   let Z :. h :. w = Friday.shape img
+--       c = nChannels img
+--       imgVector = vector img
+--   out <- MV.new $ c * h * w
+--   forM_ [0..h-1] $ \i -> do
+--     forM_ [0..w-1] $ \j -> do
+--       forM_ [0..c-1] $ \k -> do
+--         MV.unsafeWrite out (j + w * (i + h * k)) $ conv $ pixIndex (V.unsafeIndex imgVector (j + w * i)) k
+--   V.unsafeFreeze out
+
+-- Converts an image to a storable-based vector by casting and sharing the inner
+-- data foreign pointer.
+img_to_vec :: (Image i, Pixel (ImagePixel i), Storable (PixelChannel (ImagePixel i)))
+           => i -> V.Vector (PixelChannel (ImagePixel i))
+img_to_vec img =
+  let Manifest (Z :. h :. w) pixVec = compute img
       c = nChannels img
-      imgVector = vector img
-  out <- MV.new $ c * h * w
-  forM_ [0..h-1] $ \i -> do
-    forM_ [0..w-1] $ \j -> do
-      forM_ [0..c-1] $ \k -> do
-        MV.unsafeWrite out (j + w * (i + h * k)) $ conv $ pixIndex (V.unsafeIndex imgVector (j + w * i)) k
-  V.unsafeFreeze out
+      (pixFptr, o, l) = V.unsafeToForeignPtr pixVec
+  in V.unsafeFromForeignPtr (castForeignPtr pixFptr) (c*o) (c*l)
 
 -- applies a pixel-wise operation to all images.
 map_pixels :: (FunctorImage src dst, Monad m)
            => (ImagePixel src -> ImagePixel dst) -> Pipe src dst m ()
 map_pixels f = forever $ await >>= yield . Friday.map f
 
-batch_images :: (Image i, TensorDataType a, Pixel (ImagePixel i), Monad m)
-             => (PixelChannel (ImagePixel i) -> a) -> Int -> Int -> Pipe (i, [Int]) (V.Vector a, [Int], V.Vector a, [Int]) m ()
-batch_images conv nb_labels batch_size = forever $ do
+batch_images :: (Image i, Storable (PixelChannel (ImagePixel i)),
+                 Pixel (ImagePixel i), Monad m, TensorDataType a)
+             => Int
+             -> Int
+             -> Pipe (i, [Int]) (V.Vector (PixelChannel (ImagePixel i)), [Int], V.Vector a, [Int]) m ()
+batch_images nb_labels batch_size = forever $ do
   imgAndLabels <- replicateM batch_size await
   let (images, labels) = unzip imgAndLabels
       Z :. h :. w = Friday.shape $ head images
       c = nChannels $ head images
       oneHot ls = V.fromList [if i `elem` ls then 1 else 0 | i <- [0..nb_labels - 1]]
-      batch = V.concat $ fmap (img_to_chw conv) images
+      imgVecs = fmap img_to_vec $ images
+      batch = V.concat $ imgVecs
       lmatrix = V.concat $ fmap oneHot labels
-  yield (batch, [batch_size, c, h, w], lmatrix, [batch_size, nb_labels])
+  yield (batch, [batch_size, h, w, c], lmatrix, [batch_size, nb_labels])
 
 batch_to_gpu :: (Monad m, TensorDataType a) => Pipe (V.Vector a, [Int], V.Vector a, [Int]) (Tensor a, Tensor a) m ()
 batch_to_gpu = forever $ do

@@ -31,6 +31,9 @@ module HNN.Layers (
   , inv
   , lexp
   , llog
-  , add  
+  , add
+  , transformTensor
+  , nchw
+  , nhwc
   ) where
 import HNN.Layers.Internal

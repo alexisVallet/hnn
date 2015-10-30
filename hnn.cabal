@@ -61,7 +61,6 @@ test-suite hnn-test
   other-modules:       Test.HNN.NN.Mutable
                      , Test.HNN.Layers
                      , Test.HNN.NN.NumericGrad
-                     , Test.HNN.ArbitraryInstances
   build-depends:       base >= 4.7 && < 5
                      , hnn >= 0.1 && < 0.2
                      , hcudnn >= 0.1 && < 0.2
@@ -85,6 +84,7 @@ executable example-mnist
                      , pipes >= 4.1 && < 4.2
                      , friday >= 0.2 && < 0.3
                      , vector-space >= 0.9 && < 0.10
+                     , vector >= 0.10 && < 0.11
   ghc-options:         -threaded -rtsopts -with-rtsopts=-N
 
 source-repository head

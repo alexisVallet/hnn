@@ -189,3 +189,8 @@ test_pooling2d :: Spec
 test_pooling2d = describe "HNN.Layers.pooling2d" $ do
   it "has an analytic gradient close to the numeric gradient" $ do
     check_backward_noweights (pooling2d pooling_max (2,2) (0,0) (2,2)) (normal 0 0.1 [1,1,4,4]) (normal 0 0.1 [1,1,2,2] :: GPU (Tensor CFloat))
+
+test_transformTensor :: Spec
+test_transformTensor = describe "HNN.Layers.transformTensor" $ do
+  it "has an analytic gradient close to the numeric gradient" $ do
+    check_backward_noweights (transformTensor nhwc nchw) (normal 0 0.1 [1,3,2,4] :: GPU (Tensor CFloat)) (normal 0 0.1 [1,4,3,2] :: GPU (Tensor CFloat))
