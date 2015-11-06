@@ -56,18 +56,25 @@ load_mnist directory = do
                                       Nothing -> False
                                       _ -> True) $ concat $ imgs
 
-lazy_image_loader :: (Convertible StorageImage i, MonadIO m)
-                  => Proxy i -> FilePath -> Pipe (FilePath, [Int]) (i, [Int]) m ()
+lazy_image_loader :: forall i m . (Image i, Convertible StorageImage i, Storable (ImagePixel i), MonadIO m)
+                  => Proxy i -> FilePath -> Pipe (FilePath, [Int]) (Manifest (ImagePixel i), [Int]) m ()
 lazy_image_loader _ directory = forever $ do
   (fpath, labels) <- await
-  eimg <- liftIO $ load Autodetect $ directory </> fpath
+  eimg <- {-# SCC "eimg" #-} liftIO $
+          (load Autodetect $ directory </> fpath
+           :: IO (Either StorageError i))
   case eimg of
    Left err -> liftIO $ do
      putStrLn $ "Unable to load image " ++ fpath
      putStrLn $ show err
    Right img -> do
-     yield (img, labels)
-     return ()
+     let Z:. h :. w = Friday.shape img
+     if  h == 1  || w == 1
+      then liftIO $ putStrLn $ "Image loaded as 1 by 1, skipping: " ++ fpath
+      else do
+       imgRes <- computeP img
+       yield (imgRes, labels)
+       return ()
 
 shuffle :: MonadRandom m => [a] -> m [a]
 shuffle xs = do
@@ -131,6 +138,18 @@ map_pixels :: (FunctorImage src dst, Monad m)
            => (ImagePixel src -> ImagePixel dst) -> Pipe src dst m ()
 map_pixels f = forever $ await >>= yield . Friday.map f
 
+samesize_concat :: (Storable a) => [V.Vector a] -> V.Vector a
+samesize_concat vectors = runST $ do
+  let size = V.length $ head vectors
+      nbVectors = length vectors
+      totalSize = nbVectors * size
+  mres <- MV.new totalSize
+  forM_ (zip [0..] vectors) $ \(i,v) -> do
+    let mresslice = MV.unsafeSlice (i * size) size mres
+    mv <- V.unsafeThaw v
+    MV.unsafeCopy mresslice mv
+  V.unsafeFreeze mres
+
 batch_images :: (Image i, Storable (PixelChannel (ImagePixel i)),
                  Pixel (ImagePixel i), Monad m, TensorDataType a)
              => Int
@@ -143,11 +162,11 @@ batch_images nb_labels batch_size = forever $ do
       c = nChannels $ head images
       oneHot ls = V.fromList [if i `elem` ls then 1 else 0 | i <- [0..nb_labels - 1]]
       imgVecs = fmap img_to_vec $ images
-      batch = V.concat $ imgVecs
+      batch = samesize_concat imgVecs
       lmatrix = V.concat $ fmap oneHot labels
   yield (batch, [batch_size, h, w, c], lmatrix, [batch_size, nb_labels])
 
-batch_to_gpu :: (Monad m, TensorDataType a) => Pipe (V.Vector a, [Int], V.Vector a, [Int]) (Tensor a, Tensor a) m ()
+batch_to_gpu :: (MonadIO m, TensorDataType a) => Pipe (V.Vector a, [Int], V.Vector a, [Int]) (Tensor a, Tensor a) m ()
 batch_to_gpu = forever $ do
   (batch, bshape, labels, lshape) <- await
   yield (fromVector bshape batch, fromVector lshape labels)
@@ -171,9 +190,9 @@ serializeTo fpath toSerialize = do
   liftIO $ B.writeFile fpath $ encode toSerialize
 
 -- Dataset transformations
-random_crop :: (MonadRandom m, Image i1, FromFunction i1, ImagePixel i1 ~ FromFunctionPixel i1)
-            => Int -> Int -> Pipe (i1,l) (i1,l) m ()
-random_crop width height = forever $ do
+random_crop :: forall i l m . (Image i, Storable (ImagePixel i), MonadRandom m)
+            => Proxy i -> Int -> Int -> Pipe (Manifest (ImagePixel i), l) (Manifest (ImagePixel i), l) m ()
+random_crop _ width height = forever $ do
   (img,l) <- await
   let Z :. imgHeight :. imgWidth = Friday.shape img
   if (imgWidth < width || imgHeight < height)
@@ -181,8 +200,9 @@ random_crop width height = forever $ do
    else do
     ix <- lift $ getRandomR (0,imgWidth-width)
     iy <- lift $ getRandomR (0,imgHeight-height)
-    let croppedImg = crop (Rect ix iy width height) img
-    yield (croppedImg, l)
+    let croppedImg = crop (Rect ix iy width height) img :: Manifest (ImagePixel i)
+    cropRes <- computeP croppedImg
+    yield (cropRes, l)
 
 timePipe :: (NFData a, NFData b, MonadIO m, MonadIO m')
          => String -> Pipe a b m c -> m' (Pipe a b m c)
