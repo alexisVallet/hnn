@@ -1,4 +1,4 @@
-{-# LANGUAGE TemplateHaskell, ScopedTypeVariables, TypeFamilies #-}
+{-# LANGUAGE TemplateHaskell, ScopedTypeVariables, TypeFamilies, DataKinds, TypeOperators #-}
 module HNN.Layers.Internal (
     GPU
   , cudnnHandle
@@ -9,6 +9,7 @@ module HNN.Layers.Internal (
   , CuDNN.convolution_fwd_algo_implicit_precomp_gemm
   , CuDNN.convolution_fwd_algo_gemm
   , CuDNN.convolution_fwd_algo_direct
+  , bias
   , activation
   , CuDNN.activation_sigmoid
   , CuDNN.activation_relu
@@ -53,6 +54,7 @@ import Control.Lens hiding ((<.>))
 import Control.Category
 import Control.Monad.Primitive
 import System.IO.Unsafe
+import Data.HList.HList
 
 import HNN.Tensor
 import HNN.NN
@@ -71,21 +73,49 @@ type GPU  = ReaderT GPUReader IO
 -- Actually running the thing.
 runGPU :: CULLong -> GPU a -> IO a
 runGPU rngSeed action = do
-  cudnn <- createHandle
+  putStrLn "Initi cublas..."
   cublas <- Cublas.create
+  putStrLn "Init cudnn..."
+  cudnn <- createHandle
+  putStrLn "Init curand..."
   curand <- createGenerator CuRAND.rng_pseudo_default
+  putStrLn "Setting PRNG seed..."
   CuRAND.setPseudoRandomGeneratorSeed curand rngSeed
+  putStrLn "Running action..."
   runReaderT action $ GPUReader cublas cudnn curand
+
+bias :: (TensorDataType a)
+     => Layer GPU a '[Tensor a] (Tensor a) (Tensor a)
+bias = Layer $ Diff $ \(HLS (HCons bias HNil),fmaps) -> do
+          handle <- view cudnnHandle
+          let nbdims = length $ shape fmaps
+          when (not $ nbdims `elem` [2,3,4]) $
+            error "Bias can only handle 2d, 3d or 4d inputs."
+          let shapePad = take (max 0 (4 - nbdims)) $ repeat 1
+              newShape = shape fmaps ++ shapePad
+              biasShape = shape bias
+              fwdOut = runST $ do
+                bias' <- unsafeThaw $ reshape [1, product $ shape bias, 1, 1] bias
+                fmaps' <- unsafeThaw $ reshape newShape fmaps
+                out' <- addTensor handle CuDNN.add_same_c bias' fmaps'
+                out <- unsafeFreeze out'
+                return $ reshape (shape fmaps) out
+              bwd upgrad = runST $ do
+                upgrad' <- unsafeThaw $ reshape newShape upgrad
+                biasgrad' <- convolutionBackwardBias handle upgrad'
+                biasgrad <- unsafeFreeze biasgrad'
+                return (HLS $ reshape biasShape biasgrad `HCons` HNil, upgrad)
+          return (fwdOut, bwd)
 
 convolution2d :: (TensorDataType a)
               => CuDNN.ConvolutionFwdAlgo
               -> (Int, Int)
               -> (Int, Int)
               -> (Int, Int)
-              -> Layer GPU a (Tensor a) (Tensor a) (Tensor a)
+              -> Layer GPU a '[Tensor a] (Tensor a) (Tensor a)
 convolution2d algo padding stride upscale =
   Layer $ fromFwdBwd convfwd convbwd
-  where convfwd (filters,fmaps) = do
+  where convfwd (HLS (HCons filters HNil),fmaps) = do
           handle <- view cudnnHandle
           return $ runST $ do
             filters' <- unsafeThaw filters
@@ -93,7 +123,7 @@ convolution2d algo padding stride upscale =
             convres <- convolution2dFwd handle algo padding
                        stride upscale fmaps' filters'
             unsafeFreeze convres
-        convbwd (filters,fmaps) _ = do
+        convbwd (HLS (HCons filters HNil),fmaps) _ = do
           handle <- view cudnnHandle
           let bwdfilters upgrad = runST $ do
                 filters' <- unsafeThaw filters
@@ -109,11 +139,11 @@ convolution2d algo padding stride upscale =
                 inputsgrad <- convolution2dBwdInputs handle padding stride
                               upscale fmaps' filters' upgrad'
                 unsafeFreeze inputsgrad
-          return $ \upgrad -> (bwdfilters upgrad, bwdinputs upgrad)
+          return $ \upgrad -> (HLS $ bwdfilters upgrad `HCons` HNil, bwdinputs upgrad)
 
-activation :: (TensorDataType a, VectorSpace w, a ~ Scalar w)
+activation :: (TensorDataType a)
            => CuDNN.ActivationMode
-           -> Layer GPU a w (Tensor a) (Tensor a)
+           -> Layer GPU a '[] (Tensor a) (Tensor a)
 activation mode =
   noWeights $ fromFwdBwd actfwd actbwd
   where actfwd fmaps = do
@@ -132,12 +162,12 @@ activation mode =
             unsafeFreeze grad
 
 -- pooling
-pooling2d :: (TensorDataType a, VectorSpace w, Scalar w ~ a)
+pooling2d :: (TensorDataType a)
           => CuDNN.PoolingMode
           -> (Int, Int)
           -> (Int, Int)
           -> (Int, Int)
-          -> Layer GPU a w (Tensor a) (Tensor a)
+          -> Layer GPU a '[] (Tensor a) (Tensor a)
 pooling2d mode size padding stride =
   noWeights $ fromFwdBwd poolfwd poolbwd
   where poolfwd fmaps = do
@@ -155,9 +185,9 @@ pooling2d mode size padding stride =
             unsafeFreeze grad
 
 -- dropout
-dropout :: (TensorDataType a, VectorSpace w, Scalar w ~ a)
+dropout :: (TensorDataType a)
         => a
-        -> Layer GPU a w (Tensor a) (Tensor a)
+        -> Layer GPU a '[] (Tensor a) (Tensor a)
 dropout drop_proba = noWeights $ Diff fwdbwd
   -- Simple dropout algo: generate a random tensor of 0 and 1s,
   -- elementwise multiply with the same random tensor on both forward
@@ -169,8 +199,8 @@ dropout drop_proba = noWeights $ Diff fwdbwd
           return (inp * pure_mask, \upgrad -> upgrad * pure_mask)
 
 -- elementwise log (useful for cost fct)
-llog :: (TensorDataType a, VectorSpace w, Scalar w ~ a)
-     => Layer GPU a w (Tensor a) (Tensor a)
+llog :: (TensorDataType a)
+     => Layer GPU a '[] (Tensor a) (Tensor a)
 llog = noWeights $ fromFwdBwd fwdlog bwdlog
   where fwdlog inp = return $ runST $ do
           minp <- unsafeThaw inp
@@ -184,8 +214,8 @@ llog = noWeights $ fromFwdBwd fwdlog bwdlog
                   MT.inv out
                   unsafeFreeze out
 
-inv :: (TensorDataType a, VectorSpace w, Scalar w ~ a)
-    => Layer GPU a w (Tensor a) (Tensor a)
+inv :: (TensorDataType a)
+    => Layer GPU a '[] (Tensor a) (Tensor a)
 inv = noWeights $ fromFwdBwd fwdInv bwdInv
   where fwdInv inp = return $ runST $ do
           minp <- unsafeThaw inp
@@ -195,8 +225,8 @@ inv = noWeights $ fromFwdBwd fwdInv bwdInv
         bwdInv inp invinp = return $ \upgrad -> upgrad * (-(invinp * invinp))
 
 -- elementwise exponential
-lexp :: (TensorDataType a, VectorSpace w, Scalar w ~ a)
-    => Layer GPU a w (Tensor a) (Tensor a)
+lexp :: (TensorDataType a)
+     => Layer GPU a '[] (Tensor a) (Tensor a)
 lexp = noWeights $ fromFwdBwd fwdExp bwdExp
   where fwdExp inp = return $ runST $ do
           minp <- unsafeThaw inp
@@ -207,9 +237,9 @@ lexp = noWeights $ fromFwdBwd fwdExp bwdExp
 
 -- linear layer
 linear :: (TensorDataType a)
-       => Layer GPU a (Tensor a) (Tensor a) (Tensor a)
+       => Layer GPU a '[Tensor a] (Tensor a) (Tensor a)
 linear = Layer $ fromFwdBwd fwdlinear bwdlinear
-  where fwdlinear (w,x) = do
+  where fwdlinear (HLS (HCons w HNil),x) = do
           handle <- view cublasHandle
           return $ runST $ do
             mw <- unsafeThaw w
@@ -219,7 +249,7 @@ linear = Layer $ fromFwdBwd fwdlinear bwdlinear
             out <- MT.emptyTensor [n,k]
             gemmFwd handle Cublas.N Cublas.N 1 mx mw 0 out
             unsafeFreeze out
-        bwdlinear (w,x) _ = do
+        bwdlinear (HLS (HCons w HNil),x) _ = do
           handle <- view cublasHandle
           return $ \upgrad -> runST $ do
             mw <- unsafeThaw w
@@ -231,11 +261,11 @@ linear = Layer $ fromFwdBwd fwdlinear bwdlinear
             gemmBwdB handle Cublas.N Cublas.N 1 mx mupgrad mw'
             x' <- unsafeFreeze mx'
             w' <- unsafeFreeze mw'
-            return (w', x')
+            return (HLS $ w' `HCons` HNil, x')
 
 -- matrix sum reductions
-sumCols :: (TensorDataType a, VectorSpace w, a ~ Scalar w)
-        => Layer GPU a w (Tensor a) (Tensor a)
+sumCols :: (TensorDataType a)
+        => Layer GPU a '[] (Tensor a) (Tensor a)
 sumCols = noWeights $ fromFwdBwd fwdsumcols bwdsumcols
   where fwdsumcols x = do
           handle <- view cublasHandle
@@ -256,8 +286,8 @@ sumCols = noWeights $ fromFwdBwd fwdsumcols bwdsumcols
             gemmBwdB handle Cublas.N Cublas.N 1 ones mupgrad out
             unsafeFreeze out
 
-sumRows :: (TensorDataType a, VectorSpace w, a ~ Scalar w)
-        => Layer GPU a w (Tensor a) (Tensor a)
+sumRows :: (TensorDataType a)
+        => Layer GPU a '[] (Tensor a) (Tensor a)
 sumRows = noWeights $ fromFwdBwd fwdsumrows bwdsumrows
   where fwdsumrows x = do
           handle <- view cublasHandle
@@ -278,9 +308,9 @@ sumRows = noWeights $ fromFwdBwd fwdsumrows bwdsumrows
             gemmBwdA handle Cublas.N Cublas.N 1 ones mupgrad out
             unsafeFreeze out
 
-replicateAsRows :: (TensorDataType a, VectorSpace w, a ~ Scalar w)
+replicateAsRows :: (TensorDataType a)
                 => Int
-                -> Layer GPU a w (Tensor a) (Tensor a)
+                -> Layer GPU a '[] (Tensor a) (Tensor a)
 replicateAsRows n = noWeights $ fromFwdBwd fwdRepRows bwdRepRows
   where fwdRepRows x = do
           handle <- view cublasHandle
@@ -301,9 +331,9 @@ replicateAsRows n = noWeights $ fromFwdBwd fwdRepRows bwdRepRows
             gemmBwdB handle Cublas.N Cublas.N 1 ones mupgrad out
             unsafeFreeze out
 
-replicateAsCols :: (TensorDataType a, VectorSpace w, a ~ Scalar w)
+replicateAsCols :: (TensorDataType a)
                 => Int
-                -> Layer GPU a w (Tensor a) (Tensor a)
+                -> Layer GPU a '[] (Tensor a) (Tensor a)
 replicateAsCols n = noWeights $ fromFwdBwd fwdRepCols bwdRepCols
   where fwdRepCols x = do
           handle <- view cublasHandle
@@ -345,42 +375,42 @@ replicateAsCols n = noWeights $ fromFwdBwd fwdRepCols bwdRepCols
 
 -- "Naive" GPU implementation of softmax, as workaround to bug in current
 -- CuDNN-based softmax.
-softmax :: (TensorDataType a, VectorSpace w, a ~ Scalar w)
+softmax :: (TensorDataType a)
         => Int
         -> Int
-        -> Layer GPU a w (Tensor a) (Tensor a)
+        -> Layer GPU a '[] (Tensor a) (Tensor a)
 softmax n m =
   lexp
-  >>> id &&& (sumRows >>> lreshape [n] >>> replicateAsCols m >>> inv)
-  >>> multiply
+  >+> id &&& (sumRows >+> lreshape [n] >+> replicateAsCols m >+> inv)
+  >+> multiply
 
-scale :: (TensorDataType a, VectorSpace w, a ~ Scalar w)
-      => Layer GPU a w (a, Tensor a) (Tensor a)
+scale :: (TensorDataType a)
+      => Layer GPU a '[] (a, Tensor a) (Tensor a)
 scale = noWeights $ fromFwdBwd fwdscale bwdscale
   where fwdscale (x,y) = return $ x *^ y
         bwdscale (x,y) _ = return $ \upgrad -> (upgrad <.> y, x *^ upgrad)
 
-multiply :: (TensorDataType a, VectorSpace w, a ~ Scalar w)
-         => Layer GPU a w (Tensor a, Tensor a) (Tensor a)
+multiply :: (TensorDataType a)
+         => Layer GPU a '[] (Tensor a, Tensor a) (Tensor a)
 multiply = noWeights $ fromFwdBwd fwdMul bwdMul
   where fwdMul (x1,x2) = return $ x1 * x2
         bwdMul (x1,x2) _ = return $ \upgrad -> (x2 * upgrad, x1 * upgrad)
 
-add :: (TensorDataType a, VectorSpace w, a ~ Scalar w)
-    => Layer GPU a w (Tensor a, Tensor a) (Tensor a)
+add :: (TensorDataType a)
+    => Layer GPU a '[] (Tensor a, Tensor a) (Tensor a)
 add = noWeights $ fromFwdBwd fwdadd bwdadd
   where fwdadd (x,y) = return $ x + y
         bwdadd (x,y) _ = return $ \upgrad -> (upgrad, upgrad)
 
-lreshape :: (TensorDataType a, VectorSpace w, a ~ Scalar w)
+lreshape :: (TensorDataType a)
         => [Int]
-        -> Layer GPU a w (Tensor a) (Tensor a)
+        -> Layer GPU a '[] (Tensor a) (Tensor a)
 lreshape shp = noWeights $ fromFwdBwd fwdmul bwdmul
   where fwdmul x = return $ reshape shp x
         bwdmul x _ = return $ \upgrad -> reshape (shape x) upgrad
 
-toScalar :: (TensorDataType a, VectorSpace w, a ~ Scalar w)
-         => Layer GPU a w (Tensor a) a
+toScalar :: (TensorDataType a)
+         => Layer GPU a '[] (Tensor a) a
 toScalar = noWeights $ Diff fwdBwdToScalar
   where fwdBwdToScalar x = do
           let shp = shape x
@@ -388,25 +418,25 @@ toScalar = noWeights $ Diff fwdBwdToScalar
             error $ "Can't reduce shape " ++ show shp ++ " to a scalar."
           return (head $ toList x, \upgrad -> fromList shp [upgrad])
 
-mlrCost :: (TensorDataType a, VectorSpace w, a ~ Scalar w)
+mlrCost :: (TensorDataType a)
         => Int
         -> Int
-        -> Layer GPU a w (Tensor a, Tensor a) a
+        -> Layer GPU a '[] (Tensor a, Tensor a) a
 mlrCost n c =
   let add_eps = add -< fromList [1] [10E-5] in
-  id *** (add_eps >>> softmax n c)
-  >>> multiply
-  >>> sumRows
-  >>> add_eps
-  >>> llog
-  >>> sumCols
-  >>> scale -< (-1 / fromIntegral n)
-  >>> toScalar
+  id *** (add_eps >+> softmax n c)
+  >+> multiply
+  >+> sumRows
+  >+> add_eps
+  >+> llog
+  >+> sumCols
+  >+> scale -< (-1 / fromIntegral n)
+  >+> toScalar
 
-transformTensor :: (TensorDataType a, VectorSpace w, a ~ Scalar w)
+transformTensor :: (TensorDataType a)
                 => CuDNN.TensorFormat
                 -> CuDNN.TensorFormat
-                -> Layer GPU a w (Tensor a) (Tensor a)
+                -> Layer GPU a '[] (Tensor a) (Tensor a)
 transformTensor srcf dstf = noWeights $ fromFwdBwd fwdTrans bwdTrans
   where fwdTrans srct = do
           handle <- view cudnnHandle
@@ -420,6 +450,3 @@ transformTensor srcf dstf = noWeights $ fromFwdBwd fwdTrans bwdTrans
             mdstt' <- unsafeThaw dstt'
             msrct' <- HNN.NN.Mutable.transformTensor handle dstf srcf mdstt'
             unsafeFreeze msrct'
-
-            
-  

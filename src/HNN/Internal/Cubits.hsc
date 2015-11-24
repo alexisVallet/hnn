@@ -77,3 +77,88 @@ foreign import ccall "texp"
 
 foreign import ccall "texpDouble"
   texpDouble :: DevicePtr CDouble -> CSize -> IO ()
+
+foreign import ccall "tsqrt"
+  tsqrt :: DevicePtr CFloat -> CSize -> IO ()
+
+foreign import ccall "tsqrtDouble"
+  tsqrtDouble :: DevicePtr CDouble -> CSize -> IO ()
+
+foreign import ccall "tsin"
+  tsin :: DevicePtr CFloat -> CSize -> IO ()
+
+foreign import ccall "tsinDouble"
+  tsinDouble :: DevicePtr CDouble -> CSize -> IO ()
+
+foreign import ccall "tcos"
+  tcos :: DevicePtr CFloat -> CSize -> IO ()
+
+foreign import ccall "tcosDouble"
+  tcosDouble :: DevicePtr CDouble -> CSize -> IO ()
+
+foreign import ccall "ttan"
+  ttan :: DevicePtr CFloat -> CSize -> IO ()
+
+foreign import ccall "ttanDouble"
+  ttanDouble :: DevicePtr CDouble -> CSize -> IO ()
+
+foreign import ccall "tasin"
+  tasin :: DevicePtr CFloat -> CSize -> IO ()
+
+foreign import ccall "tasinDouble"
+  tasinDouble :: DevicePtr CDouble -> CSize -> IO ()
+
+foreign import ccall "tacos"
+  tacos :: DevicePtr CFloat -> CSize -> IO ()
+
+foreign import ccall "tacosDouble"
+  tacosDouble :: DevicePtr CDouble -> CSize -> IO ()
+
+foreign import ccall "tatan"
+  tatan :: DevicePtr CFloat -> CSize -> IO ()
+
+foreign import ccall "tatanDouble"
+  tatanDouble :: DevicePtr CDouble -> CSize -> IO ()
+
+foreign import ccall "tsinh"
+  tsinh :: DevicePtr CFloat -> CSize -> IO ()
+
+foreign import ccall "tsinhDouble"
+  tsinhDouble :: DevicePtr CDouble -> CSize -> IO ()
+
+foreign import ccall "tcosh"
+  tcosh :: DevicePtr CFloat -> CSize -> IO ()
+
+foreign import ccall "tcoshDouble"
+  tcoshDouble :: DevicePtr CDouble -> CSize -> IO ()
+
+foreign import ccall "ttanh"
+  ttanh :: DevicePtr CFloat -> CSize -> IO ()
+
+foreign import ccall "ttanhDouble"
+  ttanhDouble :: DevicePtr CDouble -> CSize -> IO ()
+
+foreign import ccall "tasinh"
+  tasinh :: DevicePtr CFloat -> CSize -> IO ()
+
+foreign import ccall "tasinhDouble"
+  tasinhDouble :: DevicePtr CDouble -> CSize -> IO ()
+
+foreign import ccall "tacosh"
+  tacosh :: DevicePtr CFloat -> CSize -> IO ()
+
+foreign import ccall "tacoshDouble"
+  tacoshDouble :: DevicePtr CDouble -> CSize -> IO ()
+
+foreign import ccall "tatanh"
+  tatanh :: DevicePtr CFloat -> CSize -> IO ()
+
+foreign import ccall "tatanhDouble"
+  tatanhDouble :: DevicePtr CDouble -> CSize -> IO ()
+
+foreign import ccall "tpow"
+  tpow :: DevicePtr CFloat -> DevicePtr CFloat -> CSize -> IO ()
+
+foreign import ccall "tpowDouble"
+  tpowDouble :: DevicePtr CDouble -> DevicePtr CDouble -> CSize -> IO ()
+

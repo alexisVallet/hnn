@@ -18,6 +18,8 @@ module HNN.NN.Mutable (
   , dropoutMaskIO
   , transformTensor
   , mul
+  , addTensor
+  , convolutionBackwardBias
   ) where
 
 import Foreign
@@ -706,3 +708,55 @@ transformTensor handle srcf dstf src = do
   ioout <- unsafePrimToPrim
            $ transformTensorIO  handle srcf dstf (unsafeCoerce src :: IOTensor a)
   return $ unsafeCoerce ioout
+
+addTensorIO :: (TensorDataType a)
+            => CuDNN.Handle
+            -> CuDNN.AddMode
+            -> IOTensor a
+            -> IOTensor a
+            -> IO (IOTensor a)
+addTensorIO handle addMode bias src = do
+  out <- copy src
+  withTensor4d bias $ \biasdesc biasptr -> do
+    withTensor4d out $ \outdesc outptr -> do
+      withArray [1] $ \alpha -> withArray [1] $ \beta -> do
+        handleError "Couldn't add the tensors." $
+          CuDNN.addTensor handle addMode alpha biasdesc biasptr
+          beta outdesc outptr
+  return out
+
+addTensor :: forall a m . (TensorDataType a, PrimMonad m)
+          => CuDNN.Handle
+          -> CuDNN.AddMode
+          -> MTensor (PrimState m) a
+          -> MTensor (PrimState m) a
+          -> m (MTensor (PrimState m) a)
+addTensor handle addMode bias src = do
+  out <- unsafePrimToPrim $ addTensorIO handle addMode
+         (unsafeCoerce bias :: IOTensor a) (unsafeCoerce src :: IOTensor a)
+  return $ unsafeCoerce out
+
+convolutionBackwardBiasIO :: (TensorDataType a)
+                          => CuDNN.Handle
+                          -> IOTensor a
+                          -> IO (IOTensor a)
+convolutionBackwardBiasIO handle upgrad = do
+  [n,c,h,w] <- shape upgrad
+  biasgrad <- emptyTensor [1,c,1,1]
+  withTensor4d upgrad $ \upgraddesc upgradptr -> do
+    withTensor4d biasgrad $ \biasgraddesc biasgradptr -> do
+      withArray [1] $ \alpha -> withArray [0] $ \beta -> do
+        handleError "Couldn't compute convolution backward pass with regards to bias" $
+          CuDNN.convolutionBackwardBias handle alpha upgraddesc upgradptr
+          beta biasgraddesc biasgradptr
+  return biasgrad
+
+convolutionBackwardBias :: forall a m . (TensorDataType a, PrimMonad m)
+                        => CuDNN.Handle
+                        -> MTensor (PrimState m) a
+                        -> m (MTensor (PrimState m) a)
+convolutionBackwardBias handle upgrad = do
+  biasgrad <- unsafePrimToPrim $ convolutionBackwardBiasIO handle
+              (unsafeCoerce upgrad :: IOTensor a)
+  return $ unsafeCoerce biasgrad
+

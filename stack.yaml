@@ -10,4 +10,5 @@ extra-deps:
 - friday-0.2.2.0
 - friday-devil-0.1.1.1
 - HList-0.4.1.0
+- leveldb-haskell-0.6.3
 resolver: lts-2.17

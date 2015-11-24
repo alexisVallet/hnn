@@ -12,7 +12,10 @@ import Control.Monad
 import Data.VectorSpace
 import Data.List
 import System.Mem
+import System.Directory
 import qualified Data.Vector.Storable as V
+import qualified Database.LevelDB as LDB
+import Control.Monad.Trans.Resource
 
 import HNN as HNN
 
@@ -47,35 +50,42 @@ he_init shp fan_in = normal 0 (1 / sqrt fan_in) shp
 
 main :: IO ()
 main = do
-  putStrLn "Loading training set..."
-  mnist_train <- load_mnist $ "data" </> "mnist" </> "train" :: IO [(F.Grey, Int)]
-  putStrLn "Loading test set..."
-  mnist_test <- load_mnist $ "data" </> "mnist" </> "test" :: IO [(F.Grey, Int)]
-  putStrLn $ "Train: " ++ show (length mnist_train) ++ " samples."
-  putStrLn $ "Test: " ++ show (length mnist_test) ++ " samples."
-  putStrLn $ "Train sample 0: " ++ show (F.shape $ fst $ head mnist_train)
-  putStrLn $ "Test sample 0: " ++ show (F.shape $ fst $ head mnist_test)
+  -- Attempts to load the leveldb for mnist.
+  -- Populates it if doesn't exist.
+  let train_ldb_path = "data" </> "mnist" </> "train_ldb"
+      test_ldb_path = "data" </> "mnist" </> "test_ldb"
+      train_img_path = "data" </> "mnist" </> "train"
+      test_img_path = "data" </> "mnist" </> "test"
+  putStrLn "Building training data leveldb if not existing..."
+  runResourceT $ runEffect
+    $ (load_mnist_lazy train_img_path :: Producer (F.Grey, Int) (ResourceT IO) ())
+    >-> makeleveldb train_ldb_path Nothing
+  putStrLn "Building test data leveldb if not existing..."
+  runResourceT $ runEffect
+    $ (load_mnist_lazy test_img_path :: Producer (F.Grey, Int) (ResourceT IO) ())
+    >-> makeleveldb test_img_path Nothing
+  mnist_train <- runResourceT $ LDB.open train_ldb_path LDB.defaultOptions
+  mnist_test <- runResourceT $ LDB.open test_ldb_path LDB.defaultOptions
   let batch_size = 128
+      convLayer = convolution2d convolution_fwd_algo_implicit_gemm (1,1) (1,1) (1,1)
+                  >+> activation activation_relu
+                  >+> pooling2d pooling_max (2,2) (1,1) (2,2)
+      fcLayer = lreshape [batch_size,64*4]
+                >+> linear
+                >+> lreshape [batch_size,10,1,1]
+                >+> activation activation_relu
+      nnet =
+        transformTensor nhwc nchw
+        >+> convLayer
+        >+> convLayer
+        >+> convLayer
+        >+> convLayer
+        >+> fcLayer
+        >+> lreshape [batch_size,10]
       input_shape = [batch_size,1,28,28]
       cost_grad w (batch, labels) = do
-        let
-          convLayer = convolution2d convolution_fwd_algo_implicit_gemm (1,1) (1,1) (1,1)
-                      >>> activation activation_relu
-                      >>> pooling2d pooling_max (2,2) (1,1) (2,2)
-          fcLayer =
-            lreshape [batch_size,64*4]
-            >>> linear
-            >>> lreshape [batch_size,10,1,1]
-            >>> activation activation_relu
-          nnet =
-            (transformTensor nhwc nchw >>> convLayer)
-            >+> convLayer
-            >+> convLayer
-            >+> convLayer
-            >+> fcLayer
-            >>> lreshape [batch_size,10]
-            >>> mlrCost batch_size 10 -< labels
-        (cost, bwd) <- forwardBackward nnet (w,batch)
+        let fullNet = nnet >+> mlrCost batch_size 10 -< labels
+        (cost, bwd) <- lift $ forwardBackward fullNet (w,batch)
         let (w',_) = bwd 1
         return $ (cost, w')
   runGPU 42 $ do
@@ -84,9 +94,10 @@ main = do
     conv_w3 <- he_init [32,16,3,3] (3*3*16)
     conv_w4 <- he_init [64,32,3,3] (3*3*32)
     fc_w <- normal 0 (1/ sqrt (64*4)) [64*4,10]
-    let init_weights = (fc_w, (conv_w4, (conv_w3, (conv_w2, conv_w1))))
-    runEffect $
-      randomize (fmap (\(i,l) -> (i, [l])) mnist_train) return
+    let init_weights =
+          HLS $ conv_w1 `HCons` conv_w2 `HCons` conv_w3 `HCons` conv_w4 `HCons` fc_w `HCons` HNil
+    runResourceT $ runEffect $
+      (leveldb_random_loader mnist_train :: Producer (F.Grey, [Int]) (ResourceT GPU) ())
       >-> batch_images 10 batch_size
       >-> P.map (\(b,bs,l,ls) -> (V.map (\p -> (fromIntegral p - 128) / 255 :: CFloat) b,
                                   bs,l,ls))

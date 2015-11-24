@@ -71,6 +71,20 @@ class (Cublas.Cublas a, Floating a, Storable a, VectorSpace a, a ~ Scalar a, Ser
   rawLog :: CUDA.DevicePtr a -> CSize -> IO ()
   rawInv :: CUDA.DevicePtr a -> CSize -> IO ()
   rawExp :: CUDA.DevicePtr a -> CSize -> IO ()
+  rawSqrt :: CUDA.DevicePtr a -> CSize -> IO ()
+  rawSin :: CUDA.DevicePtr a -> CSize -> IO ()
+  rawCos :: CUDA.DevicePtr a -> CSize -> IO ()
+  rawTan :: CUDA.DevicePtr a -> CSize -> IO ()
+  rawAsin :: CUDA.DevicePtr a -> CSize -> IO ()
+  rawAcos :: CUDA.DevicePtr a -> CSize -> IO ()
+  rawAtan :: CUDA.DevicePtr a -> CSize -> IO ()
+  rawSinh :: CUDA.DevicePtr a -> CSize -> IO ()
+  rawCosh :: CUDA.DevicePtr a -> CSize -> IO ()
+  rawTanh :: CUDA.DevicePtr a -> CSize -> IO ()
+  rawAsinh :: CUDA.DevicePtr a -> CSize -> IO ()
+  rawAcosh :: CUDA.DevicePtr a -> CSize -> IO ()
+  rawAtanh :: CUDA.DevicePtr a -> CSize -> IO ()
+  rawPow :: CUDA.DevicePtr a -> CUDA.DevicePtr a -> CSize -> IO ()
   -- curand stuff
   generateUniform :: CuRAND.Generator
                   -> CUDA.DevicePtr a
@@ -102,6 +116,20 @@ instance TensorDataType CFloat where
   rawLog = Cubits.logFloat
   rawInv = Cubits.inv
   rawExp = Cubits.texp
+  rawSqrt = Cubits.tsqrt
+  rawSin = Cubits.tsin
+  rawCos = Cubits.tcos
+  rawTan = Cubits.ttan
+  rawAsin = Cubits.tasin
+  rawAcos = Cubits.tacos
+  rawAtan = Cubits.tatan
+  rawSinh = Cubits.tsinh
+  rawCosh = Cubits.tcosh
+  rawTanh = Cubits.ttanh
+  rawAsinh = Cubits.tasinh
+  rawAcosh = Cubits.tacosh
+  rawAtanh = Cubits.tatanh
+  rawPow = Cubits.tpow
   generateUniform = CuRAND.generateUniform
   generateNormal = CuRAND.generateNormal
   generateLogNormal = CuRAND.generateLogNormal
@@ -119,6 +147,20 @@ instance TensorDataType CDouble where
   rawLog = Cubits.logDouble
   rawInv = Cubits.invDouble
   rawExp = Cubits.texpDouble
+  rawSqrt = Cubits.tsqrtDouble
+  rawSin = Cubits.tsinDouble
+  rawCos = Cubits.tcosDouble
+  rawTan = Cubits.ttanDouble
+  rawAsin = Cubits.tasinDouble
+  rawAcos = Cubits.tacosDouble
+  rawAtan = Cubits.tatanDouble
+  rawSinh = Cubits.tsinhDouble
+  rawCosh = Cubits.tcoshDouble
+  rawTanh = Cubits.ttanhDouble
+  rawAsinh = Cubits.tasinhDouble
+  rawAcosh = Cubits.tacoshDouble
+  rawAtanh = Cubits.tatanhDouble
+  rawPow = Cubits.tpowDouble
   generateUniform = CuRAND.generateUniformDouble
   generateNormal = CuRAND.generateNormalDouble
   generateLogNormal = CuRAND.generateLogNormalDouble

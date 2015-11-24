@@ -16,6 +16,7 @@ module HNN.Tensor.Internal (
   , module Data.VectorSpace
   ) where
 import Foreign
+import Foreign.C
 import Data.Proxy
 import Control.Monad.Primitive
 import System.IO.Unsafe
@@ -27,6 +28,7 @@ import Data.Traversable
 import GHC.Generics
 import Data.Serialize
 import Control.DeepSeq
+import Data.Ratio
 
 import qualified HNN.Tensor.Mutable.Internal as MT
 import qualified Foreign.CUDA as CUDA
@@ -171,6 +173,47 @@ instance (MT.TensorDataType a) => Num (Tensor a) where
       MT.rawSignum resptr size
     unsafeFreeze res
   fromInteger i = fromList [1] [fromIntegral i]
+
+instance (MT.TensorDataType a) => Fractional (Tensor a) where
+  recip x = unsafePerformIO $ do
+    res <- unsafeThaw x >>= MT.copy
+    MT.inv res
+    unsafeFreeze res
+  fromRational r = fromInteger (numerator r) / fromInteger (denominator r)
+
+fromRaw :: (MT.TensorDataType a) => (CUDA.DevicePtr a -> CSize -> IO ()) -> Tensor a -> Tensor a
+fromRaw action x = unsafePerformIO $ do
+  res <- unsafeThaw x >>= MT.copy
+  let size = fromIntegral $ product $ shape x
+  MT.withDevicePtr res $ \resptr -> do
+    action resptr size
+  unsafeFreeze res
+
+instance (MT.TensorDataType a) => Floating (Tensor a) where
+  pi = fromList [1] [pi]
+  exp = fromRaw MT.rawExp
+  log = fromRaw MT.rawLog
+  sqrt = fromRaw MT.rawSqrt
+  sin = fromRaw MT.rawSin
+  cos = fromRaw MT.rawCos
+  tan = fromRaw MT.rawTan
+  asin = fromRaw MT.rawAsin
+  acos = fromRaw MT.rawAcos
+  atan = fromRaw MT.rawAtan
+  sinh = fromRaw MT.rawSinh
+  cosh = fromRaw MT.rawCosh
+  tanh = fromRaw MT.rawTanh
+  asinh = fromRaw MT.rawAsinh
+  acosh = fromRaw MT.rawAcosh
+  atanh = fromRaw MT.rawAtanh
+  x**y = unsafePerformIO $ do
+    mx <- unsafeThaw x
+    my <- unsafeThaw y >>= MT.copy
+    let size = fromIntegral $ product $ shape x
+    MT.withDevicePtr mx $ \pmx -> do
+      MT.withDevicePtr my $ \pmy -> do
+        MT.rawPow pmx pmy size
+    unsafeFreeze my
 
 -- Vector space instance for Tensors.
 instance (MT.TensorDataType a) => AdditiveGroup (Tensor a) where

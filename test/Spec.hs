@@ -24,6 +24,7 @@ main = do
     test_sumCols
     test_replicateAsCols
     test_convolution
+    test_bias
     test_softmax
     test_log
     test_mlrCost

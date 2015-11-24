@@ -5,6 +5,7 @@ module HNN.Layers (
   , convolution_fwd_algo_implicit_precomp_gemm
   , convolution_fwd_algo_gemm
   , convolution_fwd_algo_direct
+  , bias
   , activation
   , activation_sigmoid
   , activation_relu
