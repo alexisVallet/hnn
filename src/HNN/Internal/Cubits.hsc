@@ -162,3 +162,8 @@ foreign import ccall "tpow"
 foreign import ccall "tpowDouble"
   tpowDouble :: DevicePtr CDouble -> DevicePtr CDouble -> CSize -> IO ()
 
+foreign import ccall "tmax"
+  tmax :: DevicePtr CFloat -> DevicePtr CFloat -> CSize -> IO ()
+
+foreign import ccall "tmaxDouble"
+  tmaxDouble :: DevicePtr CDouble -> DevicePtr CDouble -> CSize -> IO ()

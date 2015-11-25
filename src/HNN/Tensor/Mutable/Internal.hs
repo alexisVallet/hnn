@@ -55,8 +55,7 @@ instance Serialize CDouble
 instance NFData CFloat
 instance NFData CDouble
 
-class (Cublas.Cublas a, Floating a, Storable a, VectorSpace a, a ~ Scalar a, Serialize a,
-       NFData a)
+class (Cublas.Cublas a, Floating a, Storable a, VectorSpace a, a ~ Scalar a, Serialize a, NFData a)
       => TensorDataType a where
   datatype :: Proxy a -> CuDNN.DataType
   -- ad-hoc stuff to cleanly wrap low-level C APIs
@@ -85,6 +84,7 @@ class (Cublas.Cublas a, Floating a, Storable a, VectorSpace a, a ~ Scalar a, Ser
   rawAcosh :: CUDA.DevicePtr a -> CSize -> IO ()
   rawAtanh :: CUDA.DevicePtr a -> CSize -> IO ()
   rawPow :: CUDA.DevicePtr a -> CUDA.DevicePtr a -> CSize -> IO ()
+  rawMax :: CUDA.DevicePtr a -> CUDA.DevicePtr a -> CSize -> IO ()
   -- curand stuff
   generateUniform :: CuRAND.Generator
                   -> CUDA.DevicePtr a
@@ -130,6 +130,7 @@ instance TensorDataType CFloat where
   rawAcosh = Cubits.tacosh
   rawAtanh = Cubits.tatanh
   rawPow = Cubits.tpow
+  rawMax = Cubits.tmax
   generateUniform = CuRAND.generateUniform
   generateNormal = CuRAND.generateNormal
   generateLogNormal = CuRAND.generateLogNormal
@@ -161,6 +162,7 @@ instance TensorDataType CDouble where
   rawAcosh = Cubits.tacoshDouble
   rawAtanh = Cubits.tatanhDouble
   rawPow = Cubits.tpowDouble
+  rawMax = Cubits.tmaxDouble
   generateUniform = CuRAND.generateUniformDouble
   generateNormal = CuRAND.generateNormalDouble
   generateLogNormal = CuRAND.generateLogNormalDouble

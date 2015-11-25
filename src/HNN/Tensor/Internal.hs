@@ -13,6 +13,7 @@ module HNN.Tensor.Internal (
   , fromVector
   , toVector
   , concatT
+  , elementwiseMax
   , module Data.VectorSpace
   ) where
 import Foreign
@@ -180,6 +181,15 @@ instance (MT.TensorDataType a) => Fractional (Tensor a) where
     MT.inv res
     unsafeFreeze res
   fromRational r = fromInteger (numerator r) / fromInteger (denominator r)
+
+elementwiseMax :: (MT.TensorDataType a) => Tensor a -> Tensor a -> Tensor a
+elementwiseMax x y = unsafePerformIO $ do
+  mx <- unsafeThaw x
+  my <- unsafeThaw y >>= MT.copy
+  MT.withDevicePtr mx $ \pmx -> do
+    MT.withDevicePtr my $ \pmy -> do
+      MT.rawMax pmx pmy (fromIntegral $ product $ shape x)
+  unsafeFreeze my
 
 fromRaw :: (MT.TensorDataType a) => (CUDA.DevicePtr a -> CSize -> IO ()) -> Tensor a -> Tensor a
 fromRaw action x = unsafePerformIO $ do
