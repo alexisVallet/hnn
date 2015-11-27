@@ -7,7 +7,6 @@ module HNN.NN (
   , Differentiable(..)
   , (-<)
   , fromFwdBwd
-  , Trivial(..)
   , HLSpace(..)
   , space
   , HList(..)
@@ -102,28 +101,14 @@ fromFwdBwd fwd bwd = Diff $ \inp -> do
   bwdpure <- bwd inp fwdres
   return (fwdres, bwdpure)
 
--- Vector spaces as heterogeneous lists of vector spaces. Just an heterogeneous
--- list with the scalar type as a phantom type.
-data Trivial a = Zero
-               deriving (Generic, Show)
-
-instance AdditiveGroup (Trivial a) where
-  zeroV = Zero
-  Zero ^+^ Zero = Zero
-  negateV Zero = Zero
-
-instance VectorSpace (Trivial a) where
-  type Scalar (Trivial a) = a
-  s *^ Zero = Zero
-
-instance (AdditiveGroup a) => InnerSpace (Trivial a) where
-  Zero <.> Zero = zeroV
-
 -- We store weights in heterogeneous lists internally, which get concatenated
 -- by composition.
-newtype HLSpace a l = HLS {
+newtype HLSpace (a :: *) l = HLS {
   unHLS :: HList l
   }
+
+instance (Show (HList l)) => Show (HLSpace a l) where
+  show = show . unHLS
 
 space :: (TensorDataType a) => Proxy a -> HList l -> HLSpace a l
 space _ = HLS

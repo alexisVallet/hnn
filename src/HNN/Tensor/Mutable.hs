@@ -3,19 +3,24 @@ module HNN.Tensor.Mutable (
   MTensor
   , IOTensor
   , TensorDataType(..)
-  , nbdims
+  , Shape(..)
   , dtype
-  , shape
+  , shaped
   , emptyTensor
+  , emptyTensorP
   , withDevicePtr
   , fromList
   , toList
   , zeros
+  , zerosP
+  , ones
+  , onesP
   , copy
   , threshInplace
   , tlog
   , texp  
   , inv
   , reshape
+  , reshapeP
   ) where
 import HNN.Tensor.Mutable.Internal

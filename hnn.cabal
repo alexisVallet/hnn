@@ -26,6 +26,7 @@ library
                      , HNN.Optimize.Vanilla
                      , HNN.Optimize.Momentum
                      , HNN.Init
+                     , HNN.TypeUtils
   other-modules:       HNN.Tensor.Internal
                      , HNN.Tensor.Mutable.Internal
                      , HNN.Layers.Internal
@@ -55,6 +56,13 @@ library
                      , resourcet >= 1.1
                      , transformers >= 0.3
   default-language:    Haskell2010
+  extensions:          ScopedTypeVariables
+                     , TypeFamilies
+                     , DataKinds
+                     , TypeOperators
+                     , PolyKinds
+                     , FlexibleContexts
+                     , FlexibleInstances
   Extra-libraries:     hnn_cubits
   ghc-options:         -threaded -rtsopts -with-rtsopts=-N
 
@@ -62,9 +70,8 @@ test-suite hnn-test
   type:                exitcode-stdio-1.0
   hs-source-dirs:      test
   main-is:             Spec.hs
-  other-modules:       Test.HNN.NN.Mutable
-                     , Test.HNN.Layers
-                     , Test.HNN.NN.NumericGrad
+  other-modules:       Test.HNN.Layers
+                     , Test.HNN.NumericGrad
   build-depends:       base >= 4.7 && < 5
                      , hnn >= 0.1 && < 0.2
                      , hcudnn >= 0.1 && < 0.2
@@ -78,6 +85,13 @@ test-suite hnn-test
                      , HList >= 0.4
   ghc-options:         -threaded -rtsopts -with-rtsopts=-N
   default-language:    Haskell2010
+  extensions:          ScopedTypeVariables
+                     , TypeFamilies
+                     , DataKinds
+                     , TypeOperators
+                     , PolyKinds
+                     , FlexibleContexts
+                     , FlexibleInstances
 
 -- executable example-mnist
 --   hs-source-dirs:      examples/mnist/

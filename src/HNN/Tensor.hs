@@ -1,8 +1,7 @@
 module HNN.Tensor (
   Tensor
   , TensorDataType
-  , shape
-  , nbdims
+  , Shape(..)
   , dtype
   , reshape
   , unsafeFreeze
@@ -11,7 +10,9 @@ module HNN.Tensor (
   , toList
   , fromVector
   , toVector
-  , concatT
+  , tconcat
+  , tsplit
+  , elementwiseMax
   , module Data.VectorSpace
   ) where
 import Data.VectorSpace

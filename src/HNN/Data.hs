@@ -9,7 +9,6 @@ module HNN.Data (
   , map_pixels
   , batch_images
   , batch_to_gpu
-  , normalize
   , runEvery
   , serializeTo
   , random_crop
@@ -20,7 +19,7 @@ import Foreign.C
 import System.IO
 import System.FilePath
 import Vision.Image as Friday hiding (read)
-import Vision.Primitive
+import Vision.Primitive hiding (Shape)
 import Vision.Image.Storage.DevIL
 import Pipes hiding (Proxy)
 import System.Directory
@@ -99,7 +98,7 @@ load_mnist directory = do
     return imgs'
   return $ fmap fromJust $ filter (\mi -> case mi of
                                       Nothing -> False
-                                      _ -> True) $ concat $ imgs
+                                      _ -> True) $ Prelude.concat $ imgs
 
 load_mnist_lazy :: (MonadIO m, Convertible StorageImage i)
                 => FilePath -> Producer (i, Int) m ()
@@ -271,7 +270,7 @@ batch_images :: (Image i, Storable (PixelChannel (ImagePixel i)),
                  Pixel (ImagePixel i), Monad m, TensorDataType a)
              => Int
              -> Int
-             -> Pipe (i, [Int]) (V.Vector (PixelChannel (ImagePixel i)), [Int], V.Vector a, [Int]) m ()
+             -> Pipe (i, [Int]) (V.Vector (PixelChannel (ImagePixel i)), V.Vector a) m ()
 batch_images nb_labels batch_size = forever $ do
   imgAndLabels <- replicateM batch_size await
   let (images, labels) = unzip imgAndLabels
@@ -281,18 +280,14 @@ batch_images nb_labels batch_size = forever $ do
       imgVecs = fmap img_to_vec $ images
       batch = samesize_concat imgVecs
       lmatrix = V.concat $ fmap oneHot labels
-  yield (batch, [batch_size, h, w, c], lmatrix, [batch_size, nb_labels])
+  yield (batch, lmatrix)
 
-batch_to_gpu :: (MonadIO m, TensorDataType a) => Pipe (V.Vector a, [Int], V.Vector a, [Int]) (Tensor a, Tensor a) m ()
-batch_to_gpu = forever $ do
-  (batch, bshape, labels, lshape) <- await
-  yield (fromVector bshape batch, fromVector lshape labels)
-
--- normalizes batches with given mean and standard deviation
-normalize :: (Monad m, TensorDataType a) => a -> a -> Pipe (Tensor a, Tensor a) (Tensor a, Tensor a) m ()
-normalize mean std = forever $ do
+batch_to_gpu :: (MonadIO m, TensorDataType a, Shape s1, Shape s2)
+             => Proxy [s1,s2]
+             -> Pipe (V.Vector a, V.Vector a) (Tensor s1 a, Tensor s2 a) m ()
+batch_to_gpu _ = forever $ do
   (batch, labels) <- await
-  yield $ ((1/std) *^ batch - T.fromList [1] [mean], labels)
+  yield (fromVector batch, fromVector labels)
 
 -- serializes inputs
 runEvery :: (Monad m) => Int -> (a -> m ()) -> Pipe a a m c

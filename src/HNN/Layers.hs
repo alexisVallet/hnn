@@ -5,7 +5,7 @@ module HNN.Layers (
   , convolution_fwd_algo_implicit_precomp_gemm
   , convolution_fwd_algo_gemm
   , convolution_fwd_algo_direct
-  , bias
+  , ConvOutShape
   , activation
   , activation_sigmoid
   , activation_relu
@@ -24,6 +24,7 @@ module HNN.Layers (
   , ConvolutionFwdAlgo
   , ActivationMode
   , PoolingMode
+  , PoolOutShape
   , lreshape
   , mlrCost
   , toScalar
@@ -33,8 +34,7 @@ module HNN.Layers (
   , lexp
   , llog
   , add
-  , transformTensor
-  , nchw
-  , nhwc
+  , nchw_to_nhwc
+  , nhwc_to_nchw
   ) where
 import HNN.Layers.Internal

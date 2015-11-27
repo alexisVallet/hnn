@@ -1,22 +1,27 @@
-{-# LANGUAGE GADTs, ScopedTypeVariables, TypeFamilies, UndecidableInstances #-}
+{-# LANGUAGE UndecidableInstances #-}
 module HNN.Tensor.Mutable.Internal (
   MTensor(..)
   , IOTensor(..)
   , TensorDataType(..)
-  , nbdims
+  , Shape(..)
   , dtype
-  , shape
+  , shaped
   , emptyTensor
+  , emptyTensorP
   , withDevicePtr
   , fromList
   , toList
   , zeros
+  , zerosP
+  , ones
+  , onesP
   , copy
   , threshInplace
   , tlog
   , texp
   , inv
   , reshape
+  , reshapeP
   ) where
 import Foreign
 import Foreign.C
@@ -35,6 +40,7 @@ import Control.Monad.Primitive
 import Unsafe.Coerce
 import Data.VectorSpace
 import GHC.Generics
+import GHC.TypeLits
 import Data.Serialize
 import Control.DeepSeq
 
@@ -167,135 +173,168 @@ instance TensorDataType CDouble where
   generateNormal = CuRAND.generateNormalDouble
   generateLogNormal = CuRAND.generateLogNormalDouble
 
--- mutable tensor
-data MTensor s a = MTensor [Int] (ForeignPtr a)
+-- mutable tensor with type-level fixed shape.
+data MTensor st (shp :: [Nat]) a = MTensor (ForeignPtr a)
 
 type IOTensor = MTensor RealWorld
 
-shape :: (PrimMonad m, TensorDataType a) => MTensor (PrimState m) a -> m [Int]
-shape (MTensor shp _) = return shp
+class Shape (s :: [Nat]) where
+  type Size s :: Nat
+  type Nbdim s :: Nat
+  shape :: Proxy s -> [Int]
+  nbdim :: Proxy s -> Int
+  nbdim p = length $ shape p
+  size :: Proxy s -> Int
+  size p = product $ shape p
 
-nbdims :: (PrimMonad m) => IOTensor a -> m Int
-nbdims (MTensor shp _) = return $ length shp
+instance Shape '[] where
+  type Size '[] = 0
+  type Nbdim '[] = 0
+  shape _ = []
 
-dtype :: forall m a . (PrimMonad m, TensorDataType a)
-      => MTensor (PrimState m) a
+instance (KnownNat n) => Shape '[n] where
+  type Size '[n] = n
+  type Nbdim '[n] = 1
+  shape _ = [fromIntegral $ natVal (Proxy :: Proxy n)]
+
+instance forall (e1 :: Nat) (e2 :: Nat) (l :: [Nat])
+         . (KnownNat e1, Shape (e2 ': l))
+         => Shape (e1 ': (e2 ': l)) where
+  type Size (e1 ': (e2 ': l)) = e1 * Size (e2 ': l)
+  type Nbdim (e1 ': (e2 ': l)) = 1 + Nbdim (e2 ': l)
+  shape _ = (fromIntegral $ natVal (Proxy :: Proxy e1)) : shape (Proxy :: Proxy (e2 ': l))
+
+dtype :: forall m s a . (PrimMonad m, TensorDataType a)
+      => MTensor (PrimState m) s a
       -> m CuDNN.DataType
 dtype _ = return $ datatype (Proxy :: Proxy a)
 
-emptyTensor :: forall m a . (TensorDataType a, PrimMonad m)
-            => [Int] -> m (MTensor (PrimState m) a)
-emptyTensor shape = do
-  res <- unsafePrimToPrim $ (emptyTensorIO shape :: IO (IOTensor a))
+shaped :: Proxy s -> m (MTensor st s a) -> m (MTensor st s a)
+shaped _ mt = mt
+
+emptyTensor :: forall m s a . (TensorDataType a, Shape s, PrimMonad m)
+            => m (MTensor (PrimState m) s a)
+emptyTensor = do
+  res <- unsafePrimToPrim $ (emptyTensorIO :: IO (IOTensor s a))
   return $ unsafeCoerce res
 
-emptyTensorIO :: (TensorDataType a) => [Int] -> IO (IOTensor a)
-emptyTensorIO shape = do
-  let size = product shape
-  dvcptr <- CUDA.mallocArray size
+emptyTensorP :: forall m s a . (TensorDataType a, Shape s, PrimMonad m)
+            => Proxy s -> m (MTensor (PrimState m) s a)
+emptyTensorP _ = do
+  res <- unsafePrimToPrim $ (emptyTensorIO :: IO (IOTensor s a))
+  return $ unsafeCoerce res
+
+emptyTensorIO :: forall s a . (TensorDataType a, Shape s) => IO (IOTensor s a)
+emptyTensorIO = do
+  dvcptr <- CUDA.mallocArray $ size (Proxy :: Proxy s)
   let finalizer = CUDA.free dvcptr
   datafptr <- Foreign.Concurrent.newForeignPtr
               (CUDA.useDevicePtr dvcptr)
               finalizer
-  return $ MTensor shape datafptr
+  return $ MTensor datafptr
 
-withDevicePtr :: (Storable a) => IOTensor a -> (CUDA.DevicePtr a -> IO b) -> IO b
-withDevicePtr (MTensor _ datafptr) action = do
+withDevicePtr :: (Storable a) => IOTensor s a -> (CUDA.DevicePtr a -> IO b) -> IO b
+withDevicePtr (MTensor datafptr) action = do
   withForeignPtr datafptr $ \dataptr -> action (CUDA.DevicePtr dataptr)
 
-makeTensor :: (TensorDataType a)
-           => [Int]
-           -> Ptr a
-           -> IO (IOTensor a)
-makeTensor shape dataptr = do
-  let size = product shape
-  tensor <- emptyTensor shape
+makeTensor :: forall s a . (TensorDataType a, Shape s)
+           => Ptr a
+           -> IO (IOTensor s a)
+makeTensor dataptr = do
+  tensor <- emptyTensor
   withDevicePtr tensor $ \dvcptr ->
-    CUDA.pokeArray size dataptr dvcptr
+    CUDA.pokeArray (size (Proxy :: Proxy s)) dataptr dvcptr
   return tensor
 
-fromList :: forall m a . (PrimMonad m, TensorDataType a)
-         =>  [Int] -> [a] -> m (MTensor (PrimState m) a)
-fromList shape content = do
-  res <- unsafePrimToPrim $ (fromListIO shape content :: IO (IOTensor a))
+fromList :: forall m s a . (PrimMonad m, TensorDataType a, Shape s)
+         =>  [a] -> m (MTensor (PrimState m) s a)
+fromList content = do
+  res <- unsafePrimToPrim $ (fromListIO content :: IO (IOTensor s a))
   return $ unsafeCoerce res
 
-fromListIO :: (TensorDataType a)
-         => [Int]
-         -> [a]
-         -> IO (IOTensor a)
-fromListIO shape datalist = do
-  when (product shape /= length datalist) $ ioError $ userError
+fromListIO :: forall s a . (TensorDataType a, Shape s)
+           => [a]
+           -> IO (IOTensor s a)
+fromListIO datalist = do
+  when (size (Proxy :: Proxy s) /= length datalist) $ ioError $ userError
     "Shape is incompatible with provided data."
   withArray datalist $ \dataptr ->
-    makeTensor shape dataptr
+    makeTensor dataptr
 
-zeros :: forall m a . (PrimMonad m, TensorDataType a)
-      => [Int] -> m (MTensor (PrimState m) a)
-zeros shape = fromList shape $ take (product shape) $ repeat 0
+zeros :: forall m s a . (PrimMonad m, Shape s, TensorDataType a)
+      => m (MTensor (PrimState m) s a)
+zeros = fromList $ take (size (Proxy :: Proxy s)) $ repeat 0
 
-toList :: (PrimMonad m, TensorDataType a)
-       => MTensor (PrimState m) a -> m [a]
-toList tensor = unsafePrimToPrim $ toListIO (unsafeCoerce tensor)
+ones :: forall m s a . (PrimMonad m, Shape s, TensorDataType a)
+      => m (MTensor (PrimState m) s a)
+ones = fromList $ take (size (Proxy :: Proxy s)) $ repeat 1
 
-toListIO :: (TensorDataType a) => IOTensor a -> IO [a]
+zerosP :: forall m s a . (PrimMonad m, Shape s, TensorDataType a)
+       => Proxy s -> m (MTensor (PrimState m) s a)
+zerosP p = fromList $ take (size p) $ repeat 0
+
+onesP :: forall m s a . (PrimMonad m, Shape s, TensorDataType a)
+      => Proxy s -> m (MTensor (PrimState m) s a)
+onesP p = fromList $ take (size p) $ repeat 1
+
+
+toList :: forall m s a . (PrimMonad m, Shape s, TensorDataType a)
+       => MTensor (PrimState m) s a -> m [a]
+toList tensor = unsafePrimToPrim $ toListIO (unsafeCoerce tensor :: IOTensor s a)
+
+toListIO :: forall s a . (Shape s, TensorDataType a) => IOTensor s a -> IO [a]
 toListIO tensor = do
-  tensorshape <- shape tensor
-  withDevicePtr tensor (CUDA.peekListArray (product tensorshape))
+  withDevicePtr tensor (CUDA.peekListArray (size (Proxy :: Proxy s)))
 
-copy :: forall m a . (PrimMonad m, TensorDataType a)
-     => MTensor (PrimState m) a -> m (MTensor (PrimState m) a)
+copy :: forall m s a . (PrimMonad m, Shape s, TensorDataType a)
+     => MTensor (PrimState m) s a -> m (MTensor (PrimState m) s a)
 copy tensor = do
-  res <- unsafePrimToPrim $ copyIO (unsafeCoerce tensor :: IOTensor a)
+  res <- unsafePrimToPrim $ copyIO (unsafeCoerce tensor :: IOTensor s a)
   return $ unsafeCoerce res
 
-copyIO :: (TensorDataType a) => IOTensor a -> IO (IOTensor a)
+copyIO :: forall s a . (Shape s, TensorDataType a) => IOTensor s a -> IO (IOTensor s a)
 copyIO tensor = do
-  shp <- shape tensor
-  out <- emptyTensorIO shp
+  out <- emptyTensorIO
   withDevicePtr tensor $ \tensorptr -> do
     withDevicePtr out $ \outptr -> do
-      CUDA.copyArray (product shp) tensorptr outptr
+      CUDA.copyArray (size (Proxy :: Proxy s)) tensorptr outptr
       return out
 
-threshInplace :: (PrimMonad m) => MTensor (PrimState m) CFloat -> CFloat -> m ()
+threshInplace :: forall m s . (PrimMonad m, Shape s)
+              => MTensor (PrimState m) s CFloat -> CFloat -> m ()
 threshInplace tensor threshold =
-  unsafePrimToPrim $ threshInplaceIO (unsafeCoerce tensor :: IOTensor CFloat) threshold
+  unsafePrimToPrim $ threshInplaceIO (unsafeCoerce tensor :: IOTensor s CFloat) threshold
 
-threshInplaceIO :: IOTensor CFloat -> CFloat -> IO ()
+threshInplaceIO :: forall s . (Shape s) => IOTensor s CFloat -> CFloat -> IO ()
 threshInplaceIO tensor threshold = do
-  size <- fmap (fromIntegral . product) $ shape tensor
   withDevicePtr tensor $ \tensorptr -> do
-    thresh tensorptr size threshold tensorptr
+    thresh tensorptr (fromIntegral $ size (Proxy :: Proxy s)) threshold tensorptr
 
-tlog :: forall m a . (PrimMonad m, TensorDataType a)
-    => MTensor (PrimState m) a -> m ()
+tlog :: forall m s a . (PrimMonad m, Shape s, TensorDataType a)
+     => MTensor (PrimState m) s a -> m ()
 tlog tensor = unsafePrimToPrim $ do
-  let iotensor = unsafeCoerce tensor :: IOTensor a
-  size <- fmap (fromIntegral . product) $ shape iotensor
+  let iotensor = unsafeCoerce tensor :: IOTensor s a
   withDevicePtr iotensor $ \tptr -> do
-    rawLog tptr size
+    rawLog tptr (fromIntegral $ size (Proxy :: Proxy s))
 
-texp :: forall m a . (PrimMonad m, TensorDataType a)
-     => MTensor (PrimState m) a -> m ()
+texp :: forall m s a . (PrimMonad m, Shape s, TensorDataType a)
+     => MTensor (PrimState m) s a -> m ()
 texp t = unsafePrimToPrim $ do
-  let iot = unsafeCoerce t :: IOTensor a
-  size <- fmap (fromIntegral . product) $ shape iot
+  let iot = unsafeCoerce t :: IOTensor s a
   withDevicePtr iot $ \tptr -> do
-    rawExp tptr size
+    rawExp tptr (fromIntegral $ size (Proxy :: Proxy s))
 
-inv :: forall m a . (PrimMonad m, TensorDataType a)
-    => MTensor (PrimState m) a -> m ()
+inv :: forall m s a . (PrimMonad m, Shape s, TensorDataType a)
+    => MTensor (PrimState m) s a -> m ()
 inv tensor = unsafePrimToPrim $ do
-  let iotensor = unsafeCoerce tensor :: IOTensor a
-  size <- fmap (fromIntegral . product) $ shape iotensor
+  let iotensor = unsafeCoerce tensor :: IOTensor s a
   withDevicePtr iotensor $ \tptr -> do
-    rawInv tptr size
+    rawInv tptr $ fromIntegral $ size (Proxy :: Proxy s)
 
-reshape :: [Int] -> MTensor s a -> MTensor s a
-reshape shp (MTensor oldshp ptr) =
-  if product shp /= product oldshp
-  then error
-       $ "Incompatible shapes for reshaping: "
-       ++ show oldshp ++ ", " ++ show shp
-  else MTensor shp ptr
+reshape :: (Shape s1, Shape s2, Size s1 ~ Size s2)
+        => MTensor st s1 a -> MTensor st s2 a
+reshape = unsafeCoerce
+
+reshapeP :: (Shape s1, Shape s2, Size s1 ~ Size s2)
+         => Proxy s2 -> MTensor st s1 a -> MTensor st s2 a
+reshapeP _ = unsafeCoerce
